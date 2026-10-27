@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wordpress-org-svn
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version numbers
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          HEADER=$(grep -m1 -E '^\s*\*\s*Version:' woo-zahls-gateway.php | sed -E 's/.*Version:\s*//' | tr -d '[:space:]')
+          CONSTANT=$(grep -m1 -E "define\(\s*'ZAHLS_VERSION'" woo-zahls-gateway.php | sed -E "s/.*'ZAHLS_VERSION',\s*'([^']+)'.*/\1/")
+          STABLE=$(grep -m1 -iE '^Stable tag:' readme.txt | sed -E 's/^[^:]*:\s*//' | tr -d '[:space:]')
+          echo "Tag: $VERSION | Plugin header: $HEADER | ZAHLS_VERSION: $CONSTANT | Stable tag: $STABLE"
+          if [ "$VERSION" != "$HEADER" ] || [ "$VERSION" != "$CONSTANT" ] || [ "$VERSION" != "$STABLE" ]; then
+            echo "::error::Version mismatch: tag, plugin header, ZAHLS_VERSION and readme 'Stable tag' must all be $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to WordPress.org
+        id: deploy
+        uses: 10up/action-wordpress-plugin-deploy@2.3.0
+        with:
+          generate-zip: true
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: zahls-ch-payment-gateway
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.deploy.outputs.zip-path }}
+          generate_release_notes: true
+          body: |
+            Published on WordPress.org: https://wordpress.org/plugins/zahls-ch-payment-gateway/
+
+            ## Install
+            1. Install "zahls.ch" via WordPress → Plugins → Add New, or upload `zahls-ch-payment-gateway.zip`
+            2. Configure instance name and API key under WooCommerce → Settings → Payments
