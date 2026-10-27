@@ -1,0 +1,49 @@
+name: Update readme and assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'readme.txt'
+      - '.wordpress-org/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wordpress-org-svn
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: wordpress-org
+      url: https://wordpress.org/plugins/zahls-ch-payment-gateway/
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A bumped "Stable tag" belongs to the next release; pushing it to trunk
+      # before the release tag exists would point WordPress.org at a missing tag.
+      - name: Check stable tag is released
+        id: stable
+        run: |
+          STABLE=$(grep -m1 -iE '^Stable tag:' readme.txt | sed -E 's/^[^:]*:\s*//' | tr -d '[:space:]')
+          if curl -sfI "https://plugins.svn.wordpress.org/zahls-ch-payment-gateway/tags/$STABLE/" > /dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Stable tag $STABLE is not on WordPress.org yet; it will be published by the release workflow."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update readme and assets on WordPress.org
+        if: steps.stable.outputs.deploy == 'true'
+        uses: 10up/action-wordpress-plugin-asset-update@2480306f6f693672726d08b5917ea114cb2825f7 # 2.2.0
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: zahls-ch-payment-gateway
+          IGNORE_OTHER_FILES: true
