@@ -81,8 +81,10 @@ class OrderService
         $order->update_meta_data('zahls_payment_method', $paymentBrand);
         $order->payment_complete();
         $order->save();
-        // Remove cart
-        WC()->cart->empty_cart();
+        // Remove cart (there is none when called from the webhook)
+        if (WC()->cart) {
+            WC()->cart->empty_cart();
+        }
     }
 
     private function getCustomTransactionStatus($status) {

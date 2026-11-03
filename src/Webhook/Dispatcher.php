@@ -37,43 +37,57 @@ class Dispatcher
 	{
 		try {
 			$resp = $_REQUEST;
-			$order_id = $resp['transaction']['invoice']['referenceId'];
-			$gateway_id = $resp['transaction']['invoice']['paymentRequestId'];
-			
-			
-			if ( ! empty( $this->prefix ) && strpos( $order_id, $this->prefix ) === false ) {
-				$this->send_response( 'Prefix mismatch' );
+			$order_id = isset($resp['transaction']['invoice']['referenceId']) ? (string) $resp['transaction']['invoice']['referenceId'] : '';
+			$gateway_id = isset($resp['transaction']['invoice']['paymentRequestId']) ? $resp['transaction']['invoice']['paymentRequestId'] : '';
+
+			if (empty($resp['transaction']['id']) || !isset($resp['transaction']['status'])) {
+				$this->send_response('Missing transaction id or status');
+			}
+
+			if (!empty($this->prefix) && strpos($order_id, $this->prefix) === false) {
+				$this->send_response('Prefix mismatch');
 			}
 
 			$arr = explode('_', $order_id);
 			$order_id = end($arr);
 
-		   if (!isset($resp['transaction']['status'])) {
-               //throw new \Exception('Missing transaction status');
-			   $this->send_response( 'Missing transaction status' );
-			}else{
-
 			/**
 			 * @var \Zahls\Models\Response\Transaction
 			 */
-			$transaction = $this->zahls_api_service->getZahlsTransaction($resp['transaction']['id']);
-			
-			if(!empty($transaction)){
-			
+			$transaction = $this->zahls_api_service->getZahlsTransaction((int) $resp['transaction']['id']);
 
+			if (empty($transaction)) {
+				$this->log('warning', sprintf('Transaction %s not found at zahls.ch', $resp['transaction']['id']));
+				$this->send_response('Error: No such transaction found');
+			}
+
+			// zahls.ch sends a webhook for every status change of a transaction (e.g. waiting, authorized, confirmed).
+			// When an earlier one is processed after the transaction has moved on, its status no longer matches.
+			// It is answered with 200, the webhook for the current status updates the order.
 			if ($transaction->getStatus() !== $resp['transaction']['status']) {
-                throw new \Exception('Fraudulent transaction status');
+				$this->log('info', sprintf(
+					'Transaction %s: webhook status %s is outdated, current status is %s',
+					$resp['transaction']['id'],
+					$resp['transaction']['status'],
+					$transaction->getStatus()
+				));
+				$this->send_response('Outdated transaction status, nothing to process');
 			}
 
 			// Check if subscription to handle accordingly
 			$subscriptions = [];
 			$pre_auth_id = '';
-			if (!empty($resp['transaction']['preAuthorizationId'])) {
+			if (!empty($resp['transaction']['preAuthorizationId']) && function_exists('wcs_get_subscriptions_for_order')) {
 				$subscriptions = wcs_get_subscriptions_for_order($order_id, array( 'order_type' => 'any' ));
 
 				// $order_id is the subscription id in case of payment method change. In this case $subscriptions will be empty
 				if (!$subscriptions) {
-					$subscriptions[] = new \WC_Subscription($order_id);
+					$subscription = wcs_get_subscription($order_id);
+					if (!$subscription) {
+						$this->log('warning', sprintf('Transaction %s: no subscription found for %s', $resp['transaction']['id'], $order_id));
+						$this->send_response('Subscription not found, nothing to process');
+					}
+					$subscriptions[] = $subscription;
 				}
 
 				// Identify the correct order_id
@@ -85,35 +99,46 @@ class Dispatcher
 				$pre_auth_id = $resp['transaction']['preAuthorizationId'];
 			}
 
-			$order = new \WC_Order($order_id);
+			$order = $order_id ? wc_get_order($order_id) : false;
 
-			if (!$order_id || !$order) {
-                throw new \Exception('Fraudulent request');
+			if (!$order) {
+				$this->log('warning', sprintf('Transaction %s: order %s not found', $resp['transaction']['id'], $order_id));
+				$this->send_response('Order not found, nothing to process');
 			}
 
-            $newTransactionStatus = $transaction->getStatus();
-            // A confirmed transaction can also be a partial payment (with bank transfer). Therefore the new correct status must be determined by
-            if (in_array($newTransactionStatus, [Transaction::CONFIRMED, Transaction::REFUNDED, Transaction::PARTIALLY_REFUNDED])) {
-                $gateway = $this->zahls_api_service->getZahlsGateway($gateway_id);
-				$confirmedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::CONFIRMED]);
-                $refundedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::PARTIALLY_REFUNDED, Transaction::REFUNDED]);
-                $newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), $confirmedAmount, $refundedAmount);
-
-            }
+			$newTransactionStatus = $transaction->getStatus();
+			// A confirmed transaction can also be a partial payment (with bank transfer). Therefore the new correct status must be determined by
+			if (in_array($newTransactionStatus, [Transaction::CONFIRMED, Transaction::REFUNDED, Transaction::PARTIALLY_REFUNDED])) {
+				if (!empty($gateway_id)) {
+					$gateway = $this->zahls_api_service->getZahlsGateway($gateway_id);
+					$confirmedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::CONFIRMED]);
+					$refundedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::PARTIALLY_REFUNDED, Transaction::REFUNDED]);
+					$newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), $confirmedAmount, $refundedAmount);
+				} elseif ($newTransactionStatus === Transaction::CONFIRMED) {
+					// A renewal charged on the tokenization has no gateway, its own amount (in cents) is the payment
+					$newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), (int) $transaction->getAmount(), 0);
+				}
+			}
 
 			$this->order_service->handleTransactionStatus($order, $subscriptions, $transaction, $newTransactionStatus, $pre_auth_id);
 			$this->send_response( 'Success: Processed webhook response' );
-			
-			}else{
-				//transaction missing
-				$this->send_response( 'Error: No such transaction found in WooCommerce' );
-			}
-				
-			}
 
-		} catch (\Exception $e) {
-            throw new \Exception('Error: ' . $e->getMessage());
-		//	echo $e->getMessage();
+		} catch (\Throwable $e) {
+			// Logged under WooCommerce > Status > Logs (source "zahls") instead of ending as an uncaught fatal error
+			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+			$this->send_response('Error: ' . $e->getMessage(), [], 500);
+		}
+	}
+
+	/**
+	 * Writes to the WooCommerce log (source "zahls").
+	 *
+	 * @param string $level   log level.
+	 * @param string $message log message.
+	 */
+	private function log( $level, $message ) {
+		if ( function_exists( 'wc_get_logger' ) ) {
+			wc_get_logger()->log( $level, $message, [ 'source' => 'zahls' ] );
 		}
 	}
 
@@ -129,8 +154,9 @@ class Dispatcher
 		if ( ! empty( $data ) ) {
 			$response['data'] = $data;
 		}
+		status_header( $response_code );
+		header( 'Content-Type: application/json; charset=utf-8' );
 		echo wp_json_encode( $response );
-		http_response_code( $response_code );
 		die;
 	}
 }

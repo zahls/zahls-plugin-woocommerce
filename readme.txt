@@ -4,7 +4,8 @@ Donate link: https://billing.zahls.ch/de/vpos
 Tags: twint, kreditkarten, postfinance, payrexx, stripe
 Requires at least: 4.6
 Tested up to: 7.0
-Stable tag: 2.0.7
+Requires PHP: 7.4
+Stable tag: 2.0.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -180,6 +181,17 @@ The zahls.ch support team will be happy to assist you with the installation.
 
 
 == Changelog ==
+
+= 2.0.8 =
+* Fix: Automatic subscription renewals stopped with a fatal error (OrderUtil not found)
+* Fix: Renewals did not find the stored payment token with HPOS enabled
+* Fix: Block checkout did not request a payment token, subscriptions silently fell back to manual renewal
+* Fix: Fatal error at checkout when zahls.ch rejects the payment request (e.g. wrong instance name or API key); the customer now sees an error message
+* Fix: Webhook answered with an error when a status update arrived after the transaction had already moved on, which triggered a webhook error email from zahls.ch
+* Webhook errors are logged under WooCommerce > Status > Logs (source "zahls")
+* Removed the PHP 8.5 deprecation notice of curl_close()
+* WC tested up to 11.1
+* Requires PHP 7.4
 
 = 2.0.6 =
 * Fix Missing SDK

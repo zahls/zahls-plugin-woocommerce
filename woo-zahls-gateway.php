@@ -5,16 +5,17 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.7
+ * Version: 2.0.8
  * Requires at least: 4.6
  * Tested up to: 7.0
+ * Requires PHP: 7.4
  * WC requires at least: 8.0
- * WC tested up to: 10.5
+ * WC tested up to: 11.1
  */
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.7');
+define('ZAHLS_VERSION', '2.0.8');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -138,7 +139,8 @@ function WC_Zahls_offline_gateway_init()
             $this->logos = $this->get_option('logos');
 			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
             $this->subscriptionTitle = $this->get_option('subscriptions_title');
-           
+            $this->subscriptionUserDesc = $this->get_option('subscriptions_user_desc');
+
 			$this->subscriptionLogos = $this->get_option('subscription_logos');
             $this->lookAndFeelId = $this->get_option('lookAndFeelId');
 			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
@@ -212,8 +214,12 @@ function WC_Zahls_offline_gateway_init()
             $cancelRedirectUrl = wc_get_cart_url() . '?zahls_error=1&order_id=' . $order->get_id();
             $preAuthorization = false;
             $chargeOnAuth = false;
+            $customButtonText = null;
 
-            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $_POST['zahls-allow-recurring']) ) {
+            // Classic checkout posts the form field, the block checkout passes it as payment method data
+            $allowRecurring = isset($_POST['zahls-allow-recurring']) ? wc_clean(wp_unslash($_POST['zahls-allow-recurring'])) : null;
+
+            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $allowRecurring) ) {
                 case CartUtil::ORDER_SUBSCRIPTION_AUTO:
                     $preAuthorization = true;
 
@@ -271,6 +277,14 @@ function WC_Zahls_offline_gateway_init()
             }
 
             $gateway = $this->zahlsApiService->createZahlsGateway($order, $totalAmount, $basket, $purpose, $reference, $successRedirectUrl, $cancelRedirectUrl, $preAuthorization, $chargeOnAuth, $currency, $customButtonText);
+
+            // zahls.ch rejected the payment request, e.g. no active plan, wrong instance name or API key
+            if (!$gateway) {
+                wc_add_notice(__('The payment could not be started. Please try again or choose another payment method.', 'zahls-ch-payment-gateway'), 'error');
+                return [
+                    'result' => 'failure',
+                ];
+            }
 
             $order->update_meta_data('zahls_gateway_id', $gateway->getId());
             $order->save();

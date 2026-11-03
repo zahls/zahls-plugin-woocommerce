@@ -3,7 +3,8 @@
     const t = window.wp.htmlEntities,
         e = window.wp.i18n,
         n = window.wc.wcBlocksRegistry,
-        a = window.wc.wcSettings;
+        a = window.wc.wcSettings,
+        el = window.wp.element;
     var i, l, o = function() {
             var t = (0, a.getSetting)("zahls_data", null);
             if (!t) throw new Error("Zahls initialization data is not available");
@@ -12,6 +13,57 @@
         r = function() {
             var e;
             return (0, t.decodeEntities)((null === (e = o()) || void 0 === e ? void 0 : e.description) || "")
+        },
+        // Payment method content: description and, for subscriptions, the recurring payment option.
+        // The choice is sent as "zahls-allow-recurring", the same field the classic checkout posts.
+        p = function(props) {
+            var s = o(),
+                isSubscription = !!s.is_subscription,
+                allowManual = !!s.allow_manual_renewal,
+                label = (0, t.decodeEntities)(s.recurring_label || ""),
+                state = el.useState(true),
+                recurring = state[0],
+                setRecurring = state[1],
+                onPaymentSetup = props.eventRegistration.onPaymentSetup || props.eventRegistration.onPaymentProcessing,
+                responseTypes = props.emitResponse.responseTypes;
+
+            el.useEffect(function() {
+                return onPaymentSetup(function() {
+                    var allowRecurring = isSubscription && (!allowManual || recurring) ? "1" : "";
+                    return {
+                        type: responseTypes.SUCCESS,
+                        meta: {
+                            paymentMethodData: {
+                                "zahls-allow-recurring": allowRecurring
+                            }
+                        }
+                    };
+                });
+            }, [onPaymentSetup, responseTypes.SUCCESS, isSubscription, allowManual, recurring]);
+
+            var children = [el.createElement(r, { key: "description" })];
+            if (isSubscription && allowManual) {
+                children.push(el.createElement("label", {
+                    key: "recurring",
+                    htmlFor: "zahls-allow-recurring",
+                    style: { display: "block", marginTop: "0.5em" }
+                }, [
+                    el.createElement("input", {
+                        key: "checkbox",
+                        type: "checkbox",
+                        id: "zahls-allow-recurring",
+                        checked: recurring,
+                        onChange: function(event) {
+                            setRecurring(event.target.checked);
+                        },
+                        style: { marginRight: "0.5em" }
+                    }),
+                    label
+                ]));
+            } else if (isSubscription && label) {
+                children.push(el.createElement("p", { key: "recurring" }, label));
+            }
+            return el.createElement(el.Fragment, null, children);
         },
         c = function() {
             var t = o();
@@ -23,7 +75,7 @@
                     maxHeight: '24px' // Maximale Höhe und vertikale Zentrierung
                 }
             }, [
-                t.icons.map((icon, index) => 
+                t.icons.map((icon, index) =>
                     React.createElement("img", {
                         key: icon.id || index, // Verwendung von icon.id, falls verfügbar, ansonsten index
                         src: icon.src,
@@ -37,7 +89,7 @@
                 }, t.title)
             ]);
         };
-    
+
     (0, n.registerPaymentMethod)({
         name: "zahls",
         label: React.createElement(c, null),
@@ -45,7 +97,7 @@
         canMakePayment: function() {
             return !0
         },
-        content: React.createElement(r, null),
+        content: React.createElement(p, null),
         edit: React.createElement(r, null),
         supports: {
             features: null !== (i = null === (l = o()) || void 0 === l ? void 0 : l.supports) && void 0 !== i ? i : []

@@ -90,7 +90,10 @@ class CurlCommunication extends AbstractCommunication
         if ($responseBody === false) {
             $responseBody = array('status' => 'error', 'message' => $this->curlError($curl));
         }
-        curl_close($curl);
+        // curl_close() has no effect since PHP 8.0 and is deprecated since PHP 8.5
+        if (PHP_VERSION_ID < 80000) {
+            curl_close($curl);
+        }
 
         if ($responseInfo['content_type'] === 'application/json') {
             $responseBody = json_decode($responseBody, true);
