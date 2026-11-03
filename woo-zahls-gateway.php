@@ -211,7 +211,12 @@ function WC_Zahls_offline_gateway_init()
                 $basket = [];
             }
 
-            $cancelRedirectUrl = wc_get_cart_url() . '?zahls_error=1&order_id=' . $order->get_id();
+            // The order key proves that the visitor returning from zahls.ch owns the order (see handleError)
+            $cancelRedirectUrl = add_query_arg([
+                'zahls_error' => '1',
+                'order_id' => $order->get_id(),
+                'key' => $order->get_order_key(),
+            ], wc_get_cart_url());
             $preAuthorization = false;
             $chargeOnAuth = false;
             $customButtonText = null;
@@ -525,23 +530,17 @@ function WC_Zahls_offline_gateway_init()
         }
 		
 		private function handleError() {
-            // Delete old Gateway using order metadata
-			
-			
+            // Delete the unused zahls.ch gateway of the order. Only for the customer who owns the order:
+            // without the order key anyone could delete the payment link of any order.
+            $orderId = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+            $orderKey = isset($_GET['key']) ? wc_clean(wp_unslash($_GET['key'])) : '';
+            $order = $orderId ? wc_get_order($orderId) : false;
 
-            if (isset($_GET['order_id'])) {
-				if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
-	// HPOS usage is enabled.
-	$order = wc_get_order($_GET['order_id']);
-	$gatewayId = $order->get_meta('zahls_gateway_id');
-					
-} else {
-	// Traditional CPT-based orders are in use.
-	$gatewayId = intval(get_post_meta($_GET['order_id'], 'zahls_gateway_id', true));
-}
-				
-                
-                $this->zahlsApiService->deleteGatewayById($gatewayId);
+            if ($order && $orderKey !== '' && hash_equals((string) $order->get_order_key(), $orderKey) && !$order->is_paid()) {
+                $gatewayId = intval($order->get_meta('zahls_gateway_id'));
+                if ($gatewayId) {
+                    $this->zahlsApiService->deleteGatewayById($gatewayId);
+                }
             }
             wc_print_notice(__('Payment failed. Please choose another method.', 'zahls-ch-payment-gateway'), 'error');
         }

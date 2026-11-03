@@ -189,6 +189,8 @@ The zahls.ch support team will be happy to assist you with the installation.
 * Fix: Fatal error at checkout when zahls.ch rejects the payment request (e.g. wrong instance name or API key); the customer now sees an error message
 * Fix: Webhook answered with an error when a status update arrived after the transaction had already moved on, which triggered a webhook error email from zahls.ch
 * Webhook errors are logged under WooCommerce > Status > Logs (source "zahls")
+* Security: the webhook stores the verified transaction as the subscription token and only updates the order the transaction belongs to
+* Security: the cancel link only deletes the payment link of an order together with its order key
 * Removed the PHP 8.5 deprecation notice of curl_close()
 * WC tested up to 11.1
 * Requires PHP 7.4

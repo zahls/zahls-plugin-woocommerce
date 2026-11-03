@@ -37,7 +37,8 @@ class Dispatcher
 	{
 		try {
 			$resp = $_REQUEST;
-			$order_id = isset($resp['transaction']['invoice']['referenceId']) ? (string) $resp['transaction']['invoice']['referenceId'] : '';
+			$reference = isset($resp['transaction']['invoice']['referenceId']) ? (string) $resp['transaction']['invoice']['referenceId'] : '';
+			$order_id = $reference;
 			$gateway_id = isset($resp['transaction']['invoice']['paymentRequestId']) ? $resp['transaction']['invoice']['paymentRequestId'] : '';
 
 			if (empty($resp['transaction']['id']) || !isset($resp['transaction']['status'])) {
@@ -74,6 +75,19 @@ class Dispatcher
 				$this->send_response('Outdated transaction status, nothing to process');
 			}
 
+			// The webhook is unauthenticated. The order it updates must be the one the transaction was created for,
+			// as stored at zahls.ch, so a real transaction cannot be applied to another order.
+			$transaction_reference = $this->get_transaction_reference($transaction);
+			if ($transaction_reference !== '' && $transaction_reference !== $reference) {
+				$this->log('error', sprintf(
+					'Transaction %s: webhook reference %s does not match the transaction reference %s',
+					$resp['transaction']['id'],
+					$reference,
+					$transaction_reference
+				));
+				$this->send_response('Error: Reference mismatch', [], 400);
+			}
+
 			// Check if subscription to handle accordingly
 			$subscriptions = [];
 			$pre_auth_id = '';
@@ -96,7 +110,17 @@ class Dispatcher
 				// Subscription renewal > $order_id is from an old order and must be overwritten
 				$firstSubscription = reset($subscriptions);
 				$order_id = $firstSubscription->get_last_order();
-				$pre_auth_id = $resp['transaction']['preAuthorizationId'];
+
+				// Stored as the token that renewals are charged on. The id from the request cannot be verified,
+				// the fetched transaction is the pre-authorization itself.
+				$pre_auth_id = $transaction->getId();
+				if ((string) $pre_auth_id !== (string) $resp['transaction']['preAuthorizationId']) {
+					$this->log('warning', sprintf(
+						'Transaction %s: webhook preAuthorizationId %s differs from the transaction id',
+						$resp['transaction']['id'],
+						$resp['transaction']['preAuthorizationId']
+					));
+				}
 			}
 
 			$order = $order_id ? wc_get_order($order_id) : false;
@@ -128,6 +152,22 @@ class Dispatcher
 			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
 			$this->send_response('Error: ' . $e->getMessage(), [], 500);
 		}
+	}
+
+	/**
+	 * Reference id of the transaction as stored at zahls.ch, empty if the API does not return one.
+	 *
+	 * @param \Zahls\Models\Response\Transaction $transaction fetched transaction.
+	 * @return string
+	 */
+	private function get_transaction_reference( $transaction ) {
+		// Same field as in the webhook request, the top level reference only as fallback
+		$invoice = $transaction->getInvoice();
+		$reference = is_array( $invoice ) && isset( $invoice['referenceId'] ) ? (string) $invoice['referenceId'] : '';
+		if ( $reference === '' ) {
+			$reference = (string) $transaction->getReferenceId();
+		}
+		return $reference;
 	}
 
 	/**
