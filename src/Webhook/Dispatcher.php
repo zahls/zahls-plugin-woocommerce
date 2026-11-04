@@ -151,9 +151,39 @@ class Dispatcher
 
 		} catch (\Throwable $e) {
 			// Logged under WooCommerce > Status > Logs (source "zahls") instead of ending as an uncaught fatal error
-			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine() . "\n" . $this->short_trace($e));
 			$this->send_response('Error: ' . $e->getMessage(), [], 500);
 		}
+	}
+
+	/**
+	 * Innermost and outermost frames of an error, enough to see a recursion and where it started.
+	 *
+	 * @param \Throwable $e error.
+	 * @return string
+	 */
+	private function short_trace( $e ) {
+		$frames = $e->getTrace();
+		$count  = count( $frames );
+		$lines  = [];
+		foreach ( $frames as $i => $frame ) {
+			if ( $i >= 15 && $i < $count - 25 ) {
+				if ( $i === 15 ) {
+					$lines[] = sprintf( '... %d frames ...', $count - 40 );
+				}
+				continue;
+			}
+			$lines[] = sprintf(
+				'#%d %s%s%s() %s:%s',
+				$i,
+				isset( $frame['class'] ) ? $frame['class'] : '',
+				isset( $frame['type'] ) ? $frame['type'] : '',
+				isset( $frame['function'] ) ? $frame['function'] : '',
+				isset( $frame['file'] ) ? $frame['file'] : '',
+				isset( $frame['line'] ) ? $frame['line'] : ''
+			);
+		}
+		return implode( "\n", $lines );
 	}
 
 	/**

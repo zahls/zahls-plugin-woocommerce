@@ -3,9 +3,9 @@ Contributors: ivanlouis
 Donate link: https://billing.zahls.ch/de/vpos
 Tags: twint, kreditkarten, postfinance, payrexx, stripe
 Requires at least: 4.6
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.0.8
+Stable tag: 2.0.9
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -181,6 +181,13 @@ The zahls.ch support team will be happy to assist you with the installation.
 
 
 == Changelog ==
+
+= 2.0.9 =
+* Fix: Automatic subscription renewals could be charged twice, because the renewal handler was registered twice. Please update immediately if you use subscriptions.
+* Fix: The webhook could fail with "Maximum call stack size reached" (endless recursion when reading the gateway settings)
+* The gateways are loaded before scheduled renewals, so the renewal handler is always registered
+* Webhook errors are logged with a stack trace
+* Tested up to WordPress 7.1 and WooCommerce 11.2
 
 = 2.0.8 =
 * Fix: Automatic subscription renewals stopped with a fatal error (OrderUtil not found)

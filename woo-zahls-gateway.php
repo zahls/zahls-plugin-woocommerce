@@ -5,17 +5,17 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.8
+ * Version: 2.0.9
  * Requires at least: 4.6
- * Tested up to: 7.0
+ * Tested up to: 7.1
  * Requires PHP: 7.4
  * WC requires at least: 8.0
- * WC tested up to: 11.1
+ * WC tested up to: 11.2
  */
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.8');
+define('ZAHLS_VERSION', '2.0.9');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -122,31 +122,55 @@ function WC_Zahls_offline_gateway_init()
         public function init_settings() {
             parent::init_settings();
 
-            $this->enabled = $this->get_option('enabled');
-            $this->title = $this->get_option('title');
-            $this->description = $this->get_option('description');
-            
-            
-            $this->instance  	= $this->get_option('instance');
-			$this->platform = "zahls.ch";
-            
+            // Never leave the settings empty: WC_Settings_API::get_option() calls init_settings() again while
+            // they are empty, which recursed endlessly ("Maximum call stack size reached").
+            if (empty($this->settings)) {
+                $this->settings = ['enabled' => 'no'];
+            }
+
+            $this->enabled = $this->setting('enabled');
+            $this->title = $this->setting('title');
+            $this->description = $this->setting('description');
+
+            $this->instance = $this->setting('instance');
+            $this->platform = "zahls.ch";
+
             $this->instance = str_replace(".zahls.ch", "", $this->instance);
             $this->instance = str_replace(".ch", "", $this->instance);
-            
-            $this->sid = $this->get_option('sid');
-			$this->apiKey = !empty($this->get_option('apiKey')) ? $this->get_option('apiKey') : $this->get_option('sid');
-            $this->prefix = $this->get_option('prefix');
-            $this->logos = $this->get_option('logos');
-			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
-            $this->subscriptionTitle = $this->get_option('subscriptions_title');
-            $this->subscriptionUserDesc = $this->get_option('subscriptions_user_desc');
 
-			$this->subscriptionLogos = $this->get_option('subscription_logos');
-            $this->lookAndFeelId = $this->get_option('lookAndFeelId');
-			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
-			
-		}
-		
+            $this->sid = $this->setting('sid');
+            $this->apiKey = !empty($this->setting('apiKey')) ? $this->setting('apiKey') : $this->setting('sid');
+            $this->prefix = $this->setting('prefix');
+            $this->logos = $this->setting('logos');
+            $this->subscriptionsEnabled = $this->setting('subscriptions_enabled');
+            $this->subscriptionTitle = $this->setting('subscriptions_title');
+            $this->subscriptionUserDesc = $this->setting('subscriptions_user_desc');
+            $this->subscriptionLogos = $this->setting('subscription_logos');
+            $this->lookAndFeelId = $this->setting('lookAndFeelId');
+        }
+
+        /**
+         * Reads a setting like get_option(), but from the settings loaded above, so it never calls init_settings().
+         *
+         * @param string $key setting key.
+         * @return mixed
+         */
+        private function setting($key) {
+            if (isset($this->settings[$key])) {
+                return $this->settings[$key];
+            }
+            $fields = $this->get_form_fields();
+            return isset($fields[$key]['default']) ? $fields[$key]['default'] : '';
+        }
+
+		/**
+		 * Hooks are registered by the first instance only. Another instance (other plugins may create one)
+		 * would register the webhook and the renewal handler again and charge each renewal twice.
+		 *
+		 * @var bool
+		 */
+		private static $hooksRegistered = false;
+
 		protected function register_hooks() {
             // Get config data
             // Add subscription support if activated
@@ -162,7 +186,14 @@ function WC_Zahls_offline_gateway_init()
                     'subscription_payment_method_change_customer',
                     'multiple_subscriptions',
                 ));
+            }
 
+            if (self::$hooksRegistered) {
+                return;
+            }
+            self::$hooksRegistered = true;
+
+            if ($this->subscriptionsEnabled === 'yes') {
                 // Filter to extend description and title in case of recurring payment
                 add_filter('woocommerce_gateway_title', array($this, 'mutateTitle'), 10, 2);
                 add_filter('woocommerce_gateway_description', array($this, 'mutateDescription'), 10, 2);
@@ -555,6 +586,16 @@ function wc_zahls_add_to_gateways($gateways)
 }
 
 add_filter('woocommerce_payment_gateways', 'wc_zahls_add_to_gateways');
+
+/**
+ * The gateway registers its renewal handler when WooCommerce loads the payment gateways. Load them before
+ * WooCommerce Subscriptions fires woocommerce_scheduled_subscription_payment_zahls (e.g. in WP-Cron).
+ */
+add_action('woocommerce_scheduled_subscription_payment', function () {
+    if (function_exists('WC')) {
+        WC()->payment_gateways();
+    }
+}, 0);
 
 
 
