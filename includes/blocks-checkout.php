@@ -14,15 +14,15 @@ final class WC_Zahls_Blocks_Support extends AbstractPaymentMethodType
      */
     protected $name = 'zahls';
     protected $settings;
-    protected $zahls_gateway;
 
     /**
      * Initializes the payment method type.
      */
     public function initialize()
     {
+        // No own WC_Zahls_Gateway instance here: WooCommerce calls this on every request (init), and each
+        // instance registers the webhook and renewal hooks again, so every renewal was charged twice.
         $this->settings = get_option('woocommerce_zahls_settings', []);
-        $this->zahls_gateway = new WC_Zahls_Gateway();
     }
 
     /**
