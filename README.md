@@ -41,6 +41,17 @@ The SVN credentials live in the GitHub environment `wordpress-org`, so only the 
 
 Restrict the environment's deployment branches and tags to `main` and `v*`.
 
+## Dev dashboard
+
+`dev/zahls-dev-dashboard/` is a separate plugin for test and staging shops (not part of the release, see `.distignore`). Zip the folder, install it next to the zahls.ch plugin (2.0.8 or later) and open WooCommerce → zahls Dev. It shows:
+
+- environment checks and an API connection test
+- the subscriptions paid with zahls.ch, with their token, a token check at zahls.ch and a button to trigger a renewal
+- the webhook answers and renewal charges the plugin reports (hooks `zahls_webhook_response` and `zahls_renewal_charge`)
+- the test plan with checkboxes
+
+Renewals triggered there charge for real unless the zahls.ch account is in test mode.
+
 ## CI
 
 Pull requests and pushes to `main` run the `CI` workflow: version consistency check and `php -l` on PHP 7.4 and 8.5. All actions are pinned to commit SHAs; Dependabot keeps them up to date.

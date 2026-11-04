@@ -192,6 +192,15 @@ class Dispatcher
 	 * @param string|int $response_code response code.
 	 */
 	private function send_response( $message, $data = [], $response_code = 200 ) {
+		/**
+		 * Fires before the webhook answers zahls.ch, e.g. for logging in test tools.
+		 *
+		 * @param string $message       response message.
+		 * @param int    $response_code HTTP status code.
+		 * @param array  $request       webhook request data.
+		 */
+		do_action( 'zahls_webhook_response', $message, (int) $response_code, $_REQUEST );
+
 		$response['message'] = $message;
 		if ( ! empty( $data ) ) {
 			$response['data'] = $data;

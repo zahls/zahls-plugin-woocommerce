@@ -49,16 +49,33 @@ class SubscriptionService
                     sprintf('Renewal of subscription %d failed: no zahls.ch tokenization found', $subscription->get_id()),
                     ['source' => 'zahls']
                 );
+                do_action('zahls_renewal_charge', $subscription, 0, $amount, false);
                 $subscription->payment_failed();
                 continue;
             }
 
             // Both must be given to do a valid recurring transaction
-            if ($this->zahlsApiService->chargeTransaction($tokenizationId, $amount)) {
+            $charged = $this->zahlsApiService->chargeTransaction($tokenizationId, $amount);
+
+            /**
+             * Fires after a renewal was charged at zahls.ch, e.g. for logging in test tools.
+             *
+             * @param \WC_Subscription $subscription   subscription.
+             * @param int              $tokenizationId token the renewal was charged on.
+             * @param float            $amount         renewal amount.
+             * @param bool             $charged        whether zahls.ch accepted the charge.
+             */
+            do_action('zahls_renewal_charge', $subscription, $tokenizationId, $amount, $charged);
+
+            if ($charged) {
                 continue;
             }
 
             // Recurring payment failed if we reach this point
+            wc_get_logger()->error(
+                sprintf('Renewal of subscription %d: zahls.ch rejected the charge on tokenization %d', $subscription->get_id(), $tokenizationId),
+                ['source' => 'zahls']
+            );
             $subscription->payment_failed();
         }
     }
