@@ -88,22 +88,29 @@ class Dispatcher
 				$this->send_response('Error: Reference mismatch', [], 400);
 			}
 
-			// Check if subscription to handle accordingly
+			// Check if subscription to handle accordingly. A tokenization arrives as transaction with status
+			// "authorized" (https://docs.payrexx.com/developer/guides/gateway/payment-types/tokenization),
+			// renewals charged on it carry a preAuthorizationId.
 			$subscriptions = [];
 			$pre_auth_id = '';
-			if (!empty($resp['transaction']['preAuthorizationId']) && function_exists('wcs_get_subscriptions_for_order')) {
+			$is_authorization = $transaction->getStatus() === Transaction::AUTHORIZED;
+			$has_pre_auth = !empty($resp['transaction']['preAuthorizationId']);
+			if (($has_pre_auth || $is_authorization) && function_exists('wcs_get_subscriptions_for_order')) {
 				$subscriptions = wcs_get_subscriptions_for_order($order_id, array( 'order_type' => 'any' ));
 
 				// $order_id is the subscription id in case of payment method change. In this case $subscriptions will be empty
 				if (!$subscriptions) {
 					$subscription = wcs_get_subscription($order_id);
-					if (!$subscription) {
+					if ($subscription) {
+						$subscriptions[] = $subscription;
+					} elseif ($has_pre_auth) {
 						$this->log('warning', sprintf('Transaction %s: no subscription found for %s', $resp['transaction']['id'], $order_id));
 						$this->send_response('Subscription not found, nothing to process');
 					}
-					$subscriptions[] = $subscription;
 				}
+			}
 
+			if ($subscriptions) {
 				// Identify the correct order_id
 				// Automatic subscription payment > order_id is already valid and matches the referenceId. It must not be overwritten
 				// Payment method change > $order_id is a subscriptionId and must be overwritten
@@ -111,9 +118,11 @@ class Dispatcher
 				$firstSubscription = reset($subscriptions);
 				$order_id = $firstSubscription->get_last_order();
 
-				// Stored as the token that renewals are charged on. The webhook is unauthenticated, so the
-				// pre-authorization is fetched from zahls.ch and must belong to the same order as this transaction.
-				$pre_auth_id = $this->verified_pre_auth_id($resp['transaction']['preAuthorizationId'], $transaction);
+				// Renewals are charged on "the ID of the transaction with status authorized" (Payrexx docs above).
+				// Taken from the transaction fetched from zahls.ch, not from the unauthenticated request.
+				if ($is_authorization) {
+					$pre_auth_id = (string) $transaction->getId();
+				}
 			}
 
 			$order = $order_id ? wc_get_order($order_id) : false;
@@ -145,45 +154,6 @@ class Dispatcher
 			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
 			$this->send_response('Error: ' . $e->getMessage(), [], 500);
 		}
-	}
-
-	/**
-	 * Returns the pre-authorization id if zahls.ch knows it and it belongs to the same reference as the
-	 * transaction of the webhook, otherwise an empty string (nothing is stored as token).
-	 *
-	 * @param mixed                                $pre_auth_id preAuthorizationId from the webhook request.
-	 * @param \Zahls\Models\Response\Transaction $transaction fetched transaction of the webhook.
-	 * @return string
-	 */
-	private function verified_pre_auth_id( $pre_auth_id, $transaction ) {
-		$pre_auth_id = (int) $pre_auth_id;
-		if ( $pre_auth_id <= 0 ) {
-			return '';
-		}
-
-		$pre_auth = ( $pre_auth_id === (int) $transaction->getId() )
-			? $transaction
-			: $this->zahls_api_service->getZahlsTransaction( $pre_auth_id );
-
-		if ( empty( $pre_auth ) ) {
-			$this->log( 'error', sprintf( 'Transaction %s: pre-authorization %d not found at zahls.ch, token not stored', $transaction->getId(), $pre_auth_id ) );
-			return '';
-		}
-
-		$reference = $this->get_transaction_reference( $transaction );
-		$pre_auth_reference = $this->get_transaction_reference( $pre_auth );
-		if ( $reference !== '' && $pre_auth_reference !== '' && $reference !== $pre_auth_reference ) {
-			$this->log( 'error', sprintf(
-				'Transaction %s: pre-authorization %d belongs to reference %s instead of %s, token not stored',
-				$transaction->getId(),
-				$pre_auth_id,
-				$pre_auth_reference,
-				$reference
-			) );
-			return '';
-		}
-
-		return (string) $pre_auth_id;
 	}
 
 	/**
