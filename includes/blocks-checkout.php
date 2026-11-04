@@ -82,28 +82,32 @@ final class WC_Zahls_Blocks_Support extends AbstractPaymentMethodType
      */
 
     public function get_payment_method_data()
-{
-    
-    $is_subscription = false;
+    {
+        $is_subscription = false;
+        $allow_manual_renewal = false;
 
-    
-    if($this->get_setting("subscriptions_enabled")  === 'yes'){
-        // Check if the cart contains a subscription
-        $paymentMethodChangeGET = !empty($_GET['change_payment_method']) ? $_GET['change_payment_method'] : null;
-        if(CartUtil::isSubscription(WC()->cart, $paymentMethodChangeGET) == true){
-        $is_subscription = true;
-    }}
+        if ($this->get_setting('subscriptions_enabled') === 'yes') {
+            // Check if the cart contains a subscription
+            $paymentMethodChangeGET = !empty($_GET['change_payment_method']) ? $_GET['change_payment_method'] : null;
+            $is_subscription = CartUtil::isSubscription(WC()->cart, $paymentMethodChangeGET);
 
+            // Same rule as the classic checkout: the customer may only opt out of automatic renewals
+            // if WooCommerce Subscriptions accepts manual renewals
+            if ($is_subscription && class_exists('WC_Subscriptions_Admin')) {
+                $allow_manual_renewal = get_option(\WC_Subscriptions_Admin::$option_prefix . '_accept_manual_renewals', 'no') === 'yes';
+            }
+        }
 
-    
-
-    return [
-        'title' => $is_subscription ? $this->get_setting('subscriptions_title') : $this->get_setting('title'),
-        'description' => $is_subscription ? $this->get_setting('subscriptions_user_desc') : $this->get_setting('description'),
-        'supports' => $this->get_supported_features(),
-        'icons' => $this->get_payment_icons(),
-    ];
-}
+        return [
+            'title' => $is_subscription ? $this->get_setting('subscriptions_title') : $this->get_setting('title'),
+            'description' => $this->get_setting('description'),
+            'supports' => $this->get_supported_features(),
+            'icons' => $this->get_payment_icons(),
+            'is_subscription' => $is_subscription,
+            'allow_manual_renewal' => $allow_manual_renewal,
+            'recurring_label' => $this->get_setting('subscriptions_user_desc'),
+        ];
+    }
 
     /**
      * Returns an array of supported features.

@@ -74,7 +74,12 @@ class ZahlsApiService
 
             return $response;
         } catch (\Zahls\ZahlsException $e) {
-            print $e->getMessage();
+            // Printing the message here would break the JSON response of the checkout
+            wc_get_logger()->error(
+                sprintf('Creating the zahls.ch gateway for order %d failed: %s', $order->get_id(), $e->getMessage()),
+                ['source' => 'zahls']
+            );
+            return null;
         }
     }
 

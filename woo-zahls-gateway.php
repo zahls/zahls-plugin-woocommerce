@@ -5,16 +5,17 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.7
+ * Version: 2.0.8
  * Requires at least: 4.6
  * Tested up to: 7.0
+ * Requires PHP: 7.4
  * WC requires at least: 8.0
- * WC tested up to: 10.5
+ * WC tested up to: 11.1
  */
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.7');
+define('ZAHLS_VERSION', '2.0.8');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -138,7 +139,8 @@ function WC_Zahls_offline_gateway_init()
             $this->logos = $this->get_option('logos');
 			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
             $this->subscriptionTitle = $this->get_option('subscriptions_title');
-           
+            $this->subscriptionUserDesc = $this->get_option('subscriptions_user_desc');
+
 			$this->subscriptionLogos = $this->get_option('subscription_logos');
             $this->lookAndFeelId = $this->get_option('lookAndFeelId');
 			$this->subscriptionsEnabled = $this->get_option('subscriptions_enabled');
@@ -209,11 +211,20 @@ function WC_Zahls_offline_gateway_init()
                 $basket = [];
             }
 
-            $cancelRedirectUrl = wc_get_cart_url() . '?zahls_error=1&order_id=' . $order->get_id();
+            // The order key proves that the visitor returning from zahls.ch owns the order (see handleError)
+            $cancelRedirectUrl = add_query_arg([
+                'zahls_error' => '1',
+                'order_id' => $order->get_id(),
+                'key' => $order->get_order_key(),
+            ], wc_get_cart_url());
             $preAuthorization = false;
             $chargeOnAuth = false;
+            $customButtonText = null;
 
-            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $_POST['zahls-allow-recurring']) ) {
+            // Classic checkout posts the form field, the block checkout passes it as payment method data
+            $allowRecurring = isset($_POST['zahls-allow-recurring']) ? wc_clean(wp_unslash($_POST['zahls-allow-recurring'])) : null;
+
+            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $allowRecurring) ) {
                 case CartUtil::ORDER_SUBSCRIPTION_AUTO:
                     $preAuthorization = true;
 
@@ -271,6 +282,14 @@ function WC_Zahls_offline_gateway_init()
             }
 
             $gateway = $this->zahlsApiService->createZahlsGateway($order, $totalAmount, $basket, $purpose, $reference, $successRedirectUrl, $cancelRedirectUrl, $preAuthorization, $chargeOnAuth, $currency, $customButtonText);
+
+            // zahls.ch rejected the payment request, e.g. no active plan, wrong instance name or API key
+            if (!$gateway) {
+                wc_add_notice(__('The payment could not be started. Please try again or choose another payment method.', 'zahls-ch-payment-gateway'), 'error');
+                return [
+                    'result' => 'failure',
+                ];
+            }
 
             $order->update_meta_data('zahls_gateway_id', $gateway->getId());
             $order->save();
@@ -511,23 +530,17 @@ function WC_Zahls_offline_gateway_init()
         }
 		
 		private function handleError() {
-            // Delete old Gateway using order metadata
-			
-			
+            // Delete the unused zahls.ch gateway of the order. Only for the customer who owns the order:
+            // without the order key anyone could delete the payment link of any order.
+            $orderId = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+            $orderKey = isset($_GET['key']) ? wc_clean(wp_unslash($_GET['key'])) : '';
+            $order = $orderId ? wc_get_order($orderId) : false;
 
-            if (isset($_GET['order_id'])) {
-				if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
-	// HPOS usage is enabled.
-	$order = wc_get_order($_GET['order_id']);
-	$gatewayId = $order->get_meta('zahls_gateway_id');
-					
-} else {
-	// Traditional CPT-based orders are in use.
-	$gatewayId = intval(get_post_meta($_GET['order_id'], 'zahls_gateway_id', true));
-}
-				
-                
-                $this->zahlsApiService->deleteGatewayById($gatewayId);
+            if ($order && $orderKey !== '' && hash_equals((string) $order->get_order_key(), $orderKey) && !$order->is_paid()) {
+                $gatewayId = intval($order->get_meta('zahls_gateway_id'));
+                if ($gatewayId) {
+                    $this->zahlsApiService->deleteGatewayById($gatewayId);
+                }
             }
             wc_print_notice(__('Payment failed. Please choose another method.', 'zahls-ch-payment-gateway'), 'error');
         }

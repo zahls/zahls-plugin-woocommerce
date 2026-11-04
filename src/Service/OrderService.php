@@ -26,6 +26,10 @@ class OrderService
                 break;
             case \Zahls\Models\Response\Transaction::AUTHORIZED:
                 foreach ($subscriptions as $subscription) {
+                    // An unverified pre-authorization arrives empty and must not overwrite a stored token
+                    if (empty($preAuthId)) {
+                        continue;
+                    }
                     $subscription->update_meta_data('zahls_auth_transaction_id', $preAuthId);
                     $subscription->update_meta_data('zahls_payment_method', $zahlsTransaction->getPayment()['brand']);
                     $subscription->save();
@@ -81,8 +85,10 @@ class OrderService
         $order->update_meta_data('zahls_payment_method', $paymentBrand);
         $order->payment_complete();
         $order->save();
-        // Remove cart
-        WC()->cart->empty_cart();
+        // Remove cart (there is none when called from the webhook)
+        if (WC()->cart) {
+            WC()->cart->empty_cart();
+        }
     }
 
     private function getCustomTransactionStatus($status) {
