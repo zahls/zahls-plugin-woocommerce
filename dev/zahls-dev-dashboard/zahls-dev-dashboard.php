@@ -24,6 +24,7 @@ final class Zahls_Dev_Dashboard {
 	const SLUG          = 'zahls-dev';
 	const OPT_EVENTS    = 'zahls_dev_events';
 	const OPT_CHECKLIST = 'zahls_dev_checklist';
+	const OPT_SELFTEST  = 'zahls_dev_selftest';
 	const MAX_EVENTS    = 100;
 
 	public static function init() {
@@ -31,7 +32,7 @@ final class Zahls_Dev_Dashboard {
 		add_action( 'admin_menu', [ $self, 'menu' ], 99 );
 		add_action( 'zahls_webhook_response', [ $self, 'record_webhook' ], 10, 3 );
 		add_action( 'zahls_renewal_charge', [ $self, 'record_renewal' ], 10, 4 );
-		foreach ( [ 'api_check', 'token_check', 'renewal', 'clear_events', 'checklist' ] as $action ) {
+		foreach ( [ 'api_check', 'token_check', 'renewal', 'clear_events', 'checklist', 'selftest_start', 'selftest_charge', 'selftest_refund', 'selftest_reset' ] as $action ) {
 			add_action( 'admin_post_zahls_dev_' . $action, [ $self, 'handle_' . $action ] );
 		}
 	}
@@ -99,7 +100,14 @@ final class Zahls_Dev_Dashboard {
 		if ( ! $gateway || ! class_exists( '\ZahlsPaymentGateway\Service\ZahlsApiService' ) ) {
 			return null;
 		}
-		return new \ZahlsPaymentGateway\Service\ZahlsApiService( $gateway->instance, $gateway->apiKey, $gateway->platform, $gateway->prefix, $gateway->lookAndFeelId );
+		$service = new \ZahlsPaymentGateway\Service\ZahlsApiService( $gateway->instance, $gateway->apiKey, $gateway->platform, $gateway->prefix, $gateway->lookAndFeelId );
+
+		/**
+		 * Lets a test setup replace the API service, e.g. with a fake one without a zahls.ch account.
+		 *
+		 * @param \ZahlsPaymentGateway\Service\ZahlsApiService $service API service of the plugin.
+		 */
+		return apply_filters( 'zahls_dev_api_service', $service );
 	}
 
 	private function has_subscriptions() {
@@ -226,6 +234,307 @@ final class Zahls_Dev_Dashboard {
 		$this->redirect_with_notice( 'success', 'Testplan gespeichert.' );
 	}
 
+	/* ------------------------------------------------------------------ zahls self-test */
+
+	private function selftest() {
+		$test = get_option( self::OPT_SELFTEST, [] );
+		return is_array( $test ) ? $test : [];
+	}
+
+	private function save_selftest( array $test ) {
+		update_option( self::OPT_SELFTEST, $test, false );
+	}
+
+	private function posted_amount( $field, $default ) {
+		$amount = isset( $_POST[ $field ] ) ? (float) str_replace( ',', '.', wp_unslash( $_POST[ $field ] ) ) : $default;
+		return max( 0.5, round( $amount, 2 ) );
+	}
+
+	/**
+	 * Creates a test order and a tokenization gateway with the plugin's own ZahlsApiService, like the checkout of
+	 * an automatic subscription (preAuthorization, chargeOnAuthorization for a first payment > 0).
+	 */
+	public function handle_selftest_start() {
+		$this->guard( 'selftest_start' );
+		$gateway = $this->gateway();
+		$api     = $this->api();
+		if ( ! $gateway || ! $api ) {
+			$this->redirect_with_notice( 'error', 'Das zahls.ch-Gateway ist nicht geladen.' );
+		}
+		$amount          = $this->posted_amount( 'amount', 1.0 );
+		$charge_on_auth  = ! empty( $_POST['charge_on_auth'] );
+
+		$order = wc_create_order( [ 'created_via' => 'zahls-dev' ] );
+		$fee   = new WC_Order_Item_Fee();
+		$fee->set_name( 'zahls Dev-Test (Tokenisierung)' );
+		$fee->set_amount( $amount );
+		$fee->set_total( $amount );
+		$order->add_item( $fee );
+		$user = wp_get_current_user();
+		$order->set_billing_first_name( 'zahls' );
+		$order->set_billing_last_name( 'Dev-Test' );
+		$order->set_billing_email( $user->user_email );
+		$order->set_billing_country( WC()->countries->get_base_country() );
+		$order->set_currency( get_woocommerce_currency() );
+		$order->set_payment_method( 'zahls' );
+		$order->set_payment_method_title( 'zahls.ch' );
+		$order->update_meta_data( '_zahls_dev_test', 1 );
+		$order->calculate_totals( false );
+		$order->save();
+
+		// Same reference format as the plugin's checkout, so the webhook processes this order like any other.
+		$reference = ( $gateway->prefix ? $gateway->prefix . '_' : '' ) . $order->get_id();
+		$back      = $this->page_url();
+		$zahls_gw  = $api->createZahlsGateway(
+			$order,
+			$amount,
+			[],
+			'zahls Dev-Test',
+			$reference,
+			$back,
+			$back,
+			true,
+			$charge_on_auth,
+			get_woocommerce_currency()
+		);
+		if ( ! $zahls_gw ) {
+			$order->update_status( 'cancelled', 'zahls Dev-Test: Gateway nicht erstellt' );
+			$this->redirect_with_notice( 'error', 'zahls.ch hat den Zahlungslink abgelehnt. Details unter WooCommerce → Status → Logs (Quelle «zahls»).' );
+		}
+		$order->update_meta_data( 'zahls_gateway_id', $zahls_gw->getId() );
+		$order->save();
+
+		$this->save_selftest( [
+			'started'        => time(),
+			'order'          => $order->get_id(),
+			'gateway'        => (int) $zahls_gw->getId(),
+			'link'           => (string) $zahls_gw->getLink(),
+			'amount'         => $amount,
+			'charge_on_auth' => $charge_on_auth,
+			'charges'        => [],
+		] );
+		$this->redirect_with_notice( 'success', sprintf( 'Testbestellung #%d und Zahlungslink erstellt. Jetzt die Zahlungsseite öffnen und bestätigen.', $order->get_id() ) );
+	}
+
+	/** Charges the token with the plugin's chargeTransaction(), exactly as a renewal does. */
+	public function handle_selftest_charge() {
+		$this->guard( 'selftest_charge' );
+		$test  = $this->selftest();
+		$token = isset( $_POST['token'] ) ? absint( $_POST['token'] ) : 0;
+		$api   = $this->api();
+		if ( ! $test || ! $token || ! $api ) {
+			$this->redirect_with_notice( 'error', 'Kein Token zum Abbuchen.' );
+		}
+		$amount            = $this->posted_amount( 'amount', 1.0 );
+		$ok                = $api->chargeTransaction( $token, $amount );
+		$test['charges'][] = [ 'time' => time(), 'token' => $token, 'amount' => $amount, 'ok' => $ok ];
+		$this->save_selftest( $test );
+		$this->redirect_with_notice(
+			$ok ? 'success' : 'error',
+			$ok ? sprintf( 'Abbuchung von %.2f auf Token %d von zahls.ch angenommen. Der Webhook «confirmed» sollte gleich in den Ereignissen erscheinen.', $amount, $token )
+				: sprintf( 'zahls.ch hat die Abbuchung auf Token %d abgelehnt.', $token )
+		);
+	}
+
+	public function handle_selftest_refund() {
+		$this->guard( 'selftest_refund' );
+		$id     = isset( $_POST['transaction'] ) ? absint( $_POST['transaction'] ) : 0;
+		$amount = isset( $_POST['amount'] ) ? (float) $_POST['amount'] : 0;
+		$api    = $this->api();
+		if ( ! $id || $amount <= 0 || ! $api ) {
+			$this->redirect_with_notice( 'error', 'Keine Transaktion zum Rückerstatten.' );
+		}
+		$transaction = new \Zahls\Models\Request\Transaction();
+		$transaction->setId( $id );
+		$transaction->setAmount( (int) round( $amount * 100 ) );
+		try {
+			$api->getInterface()->refund( $transaction );
+			$this->redirect_with_notice( 'success', sprintf( 'Transaktion %d mit %.2f rückerstattet.', $id, $amount ) );
+		} catch ( \Throwable $e ) {
+			$this->redirect_with_notice( 'error', sprintf( 'Rückerstattung von Transaktion %d fehlgeschlagen: %s', $id, $e->getMessage() ) );
+		}
+	}
+
+	public function handle_selftest_reset() {
+		$this->guard( 'selftest_reset' );
+		delete_option( self::OPT_SELFTEST );
+		$this->redirect_with_notice( 'success', 'Selbsttest zurückgesetzt. Die Testbestellungen bleiben unter Bestellungen sichtbar.' );
+	}
+
+	/** Webhook events that belong to the running self-test. */
+	private function selftest_events( array $test ) {
+		$events = get_option( self::OPT_EVENTS, [] );
+		$events = is_array( $events ) ? $events : [];
+		return array_values( array_filter( $events, function ( $event ) use ( $test ) {
+			return $event['type'] === 'webhook' && (int) $event['time'] >= (int) $test['started'];
+		} ) );
+	}
+
+	private function render_selftest() {
+		$test = $this->selftest();
+		echo '<h2>zahls-Selbsttest (Tokenisierung und Verlängerung)</h2>';
+		echo '<p style="max-width:1100px">Prüft die zahls.ch-Seite ohne WooCommerce Subscriptions, mit dem Code des Plugins: Testbestellung und Tokenisierungs-Link (wie der Checkout eines automatischen Abos), Webhook «authorized», Abbuchungen auf den Token (wie eine Verlängerung) und die Webhooks dazu. '
+			. 'Den einzigen manuellen Schritt, die Bestätigung auf der zahls.ch-Zahlungsseite, machst du. <strong>Voraussetzung:</strong> Die Webhook-URL dieses Shops ist bei der zahls.ch-Instanz eingetragen, und nicht die des Live-Shops. Ohne Testmodus bei zahls.ch fliesst echtes Geld; Abbuchungen lassen sich unten rückerstatten.</p>';
+
+		if ( ! $test ) {
+			printf( '<form method="post" action="%s">', esc_url( admin_url( 'admin-post.php' ) ) );
+			echo '<input type="hidden" name="action" value="zahls_dev_selftest_start">';
+			wp_nonce_field( 'zahls_dev_selftest_start' );
+			printf( '<p>Betrag der Erstzahlung: <input type="text" name="amount" value="1.00" size="6"> %s &nbsp; ', esc_html( get_woocommerce_currency() ) );
+			echo '<label><input type="checkbox" name="charge_on_auth" value="1" checked> sofort abbuchen (chargeOnAuthorization, wie ein Abo mit Erstzahlung &gt; 0)</label></p>';
+			submit_button( 'Selbsttest starten', 'primary', 'submit', false );
+			echo '</form>';
+			return;
+		}
+
+		$api           = $this->api();
+		$order         = wc_get_order( $test['order'] );
+		$transactions  = [];
+		$gateway_error = '';
+		if ( $api ) {
+			try {
+				$zahls_gw = $api->getZahlsGateway( $test['gateway'] );
+				foreach ( (array) $zahls_gw->getInvoices() as $invoice ) {
+					foreach ( isset( $invoice['transactions'] ) ? (array) $invoice['transactions'] : [] as $transaction ) {
+						$transactions[] = $transaction;
+					}
+				}
+			} catch ( \Throwable $e ) {
+				$gateway_error = $e->getMessage();
+			}
+		}
+		$authorized = null;
+		foreach ( $transactions as $transaction ) {
+			if ( isset( $transaction['status'] ) && $transaction['status'] === 'authorized' ) {
+				$authorized = $transaction;
+			}
+		}
+		$token  = $authorized ? (int) $authorized['id'] : 0;
+		$events = $this->selftest_events( $test );
+
+		$auth_event = null;
+		$errors_500 = 0;
+		$confirmed  = [];
+		foreach ( $events as $event ) {
+			if ( $event['code'] >= 500 ) {
+				$errors_500++;
+			}
+			if ( $token && (int) $event['transaction'] === $token && $event['status'] === 'authorized' ) {
+				$auth_event = $event;
+			}
+			if ( $event['status'] === 'confirmed' ) {
+				$confirmed[ $event['transaction'] ] = $event;
+			}
+		}
+		$charges     = isset( $test['charges'] ) ? $test['charges'] : [];
+		$charges_ok  = count( array_filter( $charges, function ( $c ) { return $c['ok']; } ) );
+		$pre_auth_id = $auth_event ? (string) $auth_event['pre_auth'] : '';
+
+		$checks   = [];
+		$checks[] = [ 'Zahlungslink über createZahlsGateway() erstellt', 'ok', sprintf( 'Gateway %d, Bestellung #%d', $test['gateway'], $test['order'] ) ];
+		if ( $gateway_error ) {
+			$checks[] = [ 'Gateway bei zahls.ch abrufen', 'err', $gateway_error ];
+		}
+		$checks[] = $token
+			? [ 'Zahlung bestätigt: Transaktion mit Status «authorized»', 'ok', 'Transaktion ' . $token . ' = Token für Verlängerungen (laut Payrexx-Doku)' ]
+			: [ 'Zahlung bestätigt: Transaktion mit Status «authorized»', 'warn', 'Noch keine. Zahlungsseite öffnen und bestätigen, dann diese Seite neu laden.' ];
+		if ( $token ) {
+			$checks[] = $auth_event
+				? [ 'Webhook «authorized» empfangen und verarbeitet', $auth_event['code'] === 200 && strpos( $auth_event['message'], 'Success' ) === 0 ? 'ok' : 'err', 'Antwort ' . $auth_event['code'] . ': ' . $auth_event['message'] ]
+				: [ 'Webhook «authorized» empfangen und verarbeitet', 'err', 'Nicht angekommen. Kommt er bei sofortiger Abbuchung nie, speichert das Plugin bei Abos mit Erstzahlung keinen Token. Webhook-URL bei zahls.ch prüfen.' ];
+		}
+		if ( $auth_event ) {
+			if ( $pre_auth_id === '' ) {
+				$checks[] = [ 'preAuthorizationId im Webhook', 'info', 'Nicht mitgeschickt. 2.0.8 sucht das Abo trotzdem, weil der Status «authorized» ist.' ];
+			} else {
+				$same     = (int) $pre_auth_id === $token;
+				$checks[] = [ 'preAuthorizationId im Webhook = Transaktions-ID', $same ? 'ok' : 'warn', $same ? 'Gleich (' . $pre_auth_id . '): Tokens aus 2.0.7 sind dieselbe Nummer.' : 'Verschieden (' . $pre_auth_id . ' ≠ ' . $token . '): Tokens aus 2.0.7 mit der Abbuchung unten prüfen.' ];
+			}
+		}
+		if ( ! empty( $test['charge_on_auth'] ) && $token ) {
+			$paid     = $order && $order->is_paid();
+			$checks[] = [ 'Erstzahlung sofort abgebucht, Bestellung bezahlt', $paid ? 'ok' : 'warn', $order ? 'Bestellung #' . $order->get_id() . ': ' . wc_get_order_status_name( $order->get_status() ) : '–' ];
+		}
+		if ( $charges ) {
+			$checks[] = [ 'Abbuchung auf den Token (wie Verlängerung)', $charges_ok ? 'ok' : 'err', sprintf( '%d von %d angenommen', $charges_ok, count( $charges ) ) ];
+			$checks[] = [ 'Mehrfach abbuchbar', $charges_ok >= 2 ? 'ok' : 'warn', $charges_ok >= 2 ? 'Ja' : 'Für den Test zweimal abbuchen' ];
+		}
+		$checks[] = [ 'Keine Webhook-Antwort 500 seit Teststart', $errors_500 ? 'err' : 'ok', $errors_500 ? $errors_500 . '× 500 (zahls.ch verschickt Fehlermails), Details im Log' : count( $events ) . ' Webhooks, alle ohne 500' ];
+
+		echo '<table class="widefat striped" style="max-width:1100px"><tbody>';
+		foreach ( $checks as $check ) {
+			printf( '<tr><td style="width:380px"><strong>%s</strong></td><td style="width:70px">%s</td><td>%s</td></tr>', esc_html( $check[0] ), $this->badge( $check[1] ), esc_html( $check[2] ) );
+		}
+		echo '</tbody></table>';
+
+		echo '<p>';
+		if ( ! $token ) {
+			printf( '<a class="button button-primary" href="%s" target="_blank" rel="noopener">Zahlungsseite öffnen</a> ', esc_url( $test['link'] ) );
+		}
+		printf( '<a class="button" href="%s">Neu laden</a> ', esc_url( $this->page_url() ) );
+		printf( '<a class="button" href="%s" onclick="return confirm(\'Selbsttest zurücksetzen?\')">Zurücksetzen</a></p>', esc_url( $this->action_url( 'selftest_reset' ) ) );
+
+		if ( $token ) {
+			$this->render_charge_form( $token, 'Abbuchen auf Token ' . $token . ' (wie Verlängerung)' );
+			if ( $pre_auth_id !== '' && (int) $pre_auth_id !== $token ) {
+				$this->render_charge_form( (int) $pre_auth_id, 'Abbuchen auf preAuthorizationId ' . $pre_auth_id . ' (Token-Art von 2.0.7)' );
+			}
+		}
+
+		if ( $transactions ) {
+			echo '<h3>Transaktionen dieses Tests bei zahls.ch</h3><table class="widefat striped" style="max-width:1100px"><thead><tr><th>ID</th><th>Status</th><th>Betrag</th><th>Webhook</th><th></th></tr></thead><tbody>';
+			$seen = [];
+			foreach ( $transactions as $transaction ) {
+				$seen[ (string) $transaction['id'] ] = true;
+				$this->render_transaction_row( $transaction['id'], $transaction['status'], $transaction['amount'], $events );
+			}
+			// Charges on a token carry no gateway; they only show up as webhooks.
+			foreach ( $confirmed as $id => $event ) {
+				if ( empty( $seen[ (string) $id ] ) ) {
+					$this->render_transaction_row( $id, $event['status'], $event['amount'], $events );
+				}
+			}
+			echo '</tbody></table>';
+		}
+	}
+
+	private function render_charge_form( $token, $label ) {
+		printf( '<form method="post" action="%s" style="margin:8px 0">', esc_url( admin_url( 'admin-post.php' ) ) );
+		echo '<input type="hidden" name="action" value="zahls_dev_selftest_charge">';
+		printf( '<input type="hidden" name="token" value="%d">', (int) $token );
+		wp_nonce_field( 'zahls_dev_selftest_charge' );
+		printf( 'Betrag <input type="text" name="amount" value="1.00" size="6"> %s ', esc_html( get_woocommerce_currency() ) );
+		printf( '<button class="button" onclick="return confirm(\'Jetzt bei zahls.ch abbuchen?\')">%s</button></form>', esc_html( $label ) );
+	}
+
+	private function render_transaction_row( $id, $status, $amount, array $events ) {
+		$webhook = '–';
+		foreach ( $events as $event ) {
+			if ( (string) $event['transaction'] === (string) $id ) {
+				$webhook = $event['status'] . ' → ' . $event['code'];
+				break;
+			}
+		}
+		$refund = '';
+		if ( $status === 'confirmed' ) {
+			$refund = sprintf(
+				'<form method="post" action="%s" style="margin:0"><input type="hidden" name="action" value="zahls_dev_selftest_refund"><input type="hidden" name="transaction" value="%d"><input type="hidden" name="amount" value="%s">%s<button class="button button-small" onclick="return confirm(\'Transaktion rückerstatten?\')">Rückerstatten</button></form>',
+				esc_url( admin_url( 'admin-post.php' ) ),
+				(int) $id,
+				esc_attr( number_format( ( (int) $amount ) / 100, 2, '.', '' ) ),
+				wp_nonce_field( 'zahls_dev_selftest_refund', '_wpnonce', true, false )
+			);
+		}
+		printf(
+			'<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+			esc_html( $id ),
+			esc_html( $status ),
+			esc_html( number_format( ( (int) $amount ) / 100, 2, '.', '' ) ),
+			esc_html( $webhook ),
+			$refund
+		);
+	}
+
 	/* ------------------------------------------------------------------ page */
 
 	public function menu() {
@@ -246,6 +555,7 @@ final class Zahls_Dev_Dashboard {
 		}
 
 		$this->render_environment();
+		$this->render_selftest();
 		$this->render_subscriptions();
 		$this->render_events();
 		$this->render_checklist();
@@ -407,6 +717,7 @@ final class Zahls_Dev_Dashboard {
 	private function render_checklist() {
 		$steps = [
 			'env'          => [ 'Umgebung und API-Verbindung grün', 'Abschnitt «Umgebung» oben, API-Verbindung prüfen.' ],
+			'selftest'     => [ 'zahls-Selbsttest', 'Abschnitt oben starten, auf der Zahlungsseite bestätigen, zweimal abbuchen. Erwartet: alle Prüfungen grün. Danach rückerstatten.' ],
 			'once_block'   => [ 'Einmalzahlung im Block-Checkout', 'Normales Produkt kaufen. Erwartet: Bestellung «In Bearbeitung», Webhooks 200, keine Fehlermail von zahls.ch.' ],
 			'once_cancel'  => [ 'Zahlung abbrechen, dann bezahlen', 'Auf der zahls.ch-Seite abbrechen. Erwartet: Warenkorb mit Meldung. Danach erneut bezahlen; kein «Reference mismatch» im Log.' ],
 			'once_classic' => [ 'Einmalzahlung im klassischen Checkout', 'Kassenseite auf Shortcode [woocommerce_checkout] umstellen und wiederholen.' ],
