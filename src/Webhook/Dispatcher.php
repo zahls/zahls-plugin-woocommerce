@@ -111,16 +111,9 @@ class Dispatcher
 				$firstSubscription = reset($subscriptions);
 				$order_id = $firstSubscription->get_last_order();
 
-				// Stored as the token that renewals are charged on. The id from the request cannot be verified,
-				// the fetched transaction is the pre-authorization itself.
-				$pre_auth_id = $transaction->getId();
-				if ((string) $pre_auth_id !== (string) $resp['transaction']['preAuthorizationId']) {
-					$this->log('warning', sprintf(
-						'Transaction %s: webhook preAuthorizationId %s differs from the transaction id',
-						$resp['transaction']['id'],
-						$resp['transaction']['preAuthorizationId']
-					));
-				}
+				// Stored as the token that renewals are charged on. The webhook is unauthenticated, so the
+				// pre-authorization is fetched from zahls.ch and must belong to the same order as this transaction.
+				$pre_auth_id = $this->verified_pre_auth_id($resp['transaction']['preAuthorizationId'], $transaction);
 			}
 
 			$order = $order_id ? wc_get_order($order_id) : false;
@@ -152,6 +145,45 @@ class Dispatcher
 			$this->log('error', 'Webhook failed: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
 			$this->send_response('Error: ' . $e->getMessage(), [], 500);
 		}
+	}
+
+	/**
+	 * Returns the pre-authorization id if zahls.ch knows it and it belongs to the same reference as the
+	 * transaction of the webhook, otherwise an empty string (nothing is stored as token).
+	 *
+	 * @param mixed                                $pre_auth_id preAuthorizationId from the webhook request.
+	 * @param \Zahls\Models\Response\Transaction $transaction fetched transaction of the webhook.
+	 * @return string
+	 */
+	private function verified_pre_auth_id( $pre_auth_id, $transaction ) {
+		$pre_auth_id = (int) $pre_auth_id;
+		if ( $pre_auth_id <= 0 ) {
+			return '';
+		}
+
+		$pre_auth = ( $pre_auth_id === (int) $transaction->getId() )
+			? $transaction
+			: $this->zahls_api_service->getZahlsTransaction( $pre_auth_id );
+
+		if ( empty( $pre_auth ) ) {
+			$this->log( 'error', sprintf( 'Transaction %s: pre-authorization %d not found at zahls.ch, token not stored', $transaction->getId(), $pre_auth_id ) );
+			return '';
+		}
+
+		$reference = $this->get_transaction_reference( $transaction );
+		$pre_auth_reference = $this->get_transaction_reference( $pre_auth );
+		if ( $reference !== '' && $pre_auth_reference !== '' && $reference !== $pre_auth_reference ) {
+			$this->log( 'error', sprintf(
+				'Transaction %s: pre-authorization %d belongs to reference %s instead of %s, token not stored',
+				$transaction->getId(),
+				$pre_auth_id,
+				$pre_auth_reference,
+				$reference
+			) );
+			return '';
+		}
+
+		return (string) $pre_auth_id;
 	}
 
 	/**
