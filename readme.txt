@@ -185,7 +185,7 @@ The zahls.ch support team will be happy to assist you with the installation.
 = 2.0.9 =
 * Fix: Automatic subscription renewals could be charged twice, because the renewal handler was registered twice. Please update immediately if you use subscriptions.
 * Fix: The webhook could fail with "Maximum call stack size reached" (endless recursion when reading the gateway settings)
-* The gateways are loaded before scheduled renewals, so the renewal handler is always registered
+* The webhook and the renewal handler are registered once and no longer depend on when WooCommerce loads the payment gateways
 * Webhook errors are logged with a stack trace
 * Tested up to WordPress 7.1 and WooCommerce 11.2
 

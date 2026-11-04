@@ -164,8 +164,8 @@ function WC_Zahls_offline_gateway_init()
         }
 
 		/**
-		 * Hooks are registered by the first instance only. Another instance (other plugins may create one)
-		 * would register the webhook and the renewal handler again and charge each renewal twice.
+		 * Hooks are registered by the first instance only, so another instance (other plugins may create one)
+		 * does not register them again.
 		 *
 		 * @var bool
 		 */
@@ -204,8 +204,24 @@ function WC_Zahls_offline_gateway_init()
 
 
             add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
-            add_action('woocommerce_api_wc_zahls_gateway', array($this->webhookDispatcher, 'check_webhook_response'));
-            add_action('woocommerce_scheduled_subscription_payment_' . $this->id, array($this->subscriptionService, 'process_recurring_payment'), 10, 2);
+            // The webhook and the renewal handler are registered once at plugin level (see below the class).
+        }
+
+        /**
+         * Handles the zahls.ch webhook (woocommerce_api_wc_zahls_gateway).
+         */
+        public function handle_webhook() {
+            $this->webhookDispatcher->check_webhook_response();
+        }
+
+        /**
+         * Charges a renewal (woocommerce_scheduled_subscription_payment_zahls).
+         *
+         * @param float     $amount  renewal amount.
+         * @param \WC_Order $renewal renewal order.
+         */
+        public function process_scheduled_renewal($amount, $renewal) {
+            $this->subscriptionService->process_recurring_payment($amount, $renewal);
         }
         
 		
@@ -588,14 +604,38 @@ function wc_zahls_add_to_gateways($gateways)
 add_filter('woocommerce_payment_gateways', 'wc_zahls_add_to_gateways');
 
 /**
- * The gateway registers its renewal handler when WooCommerce loads the payment gateways. Load them before
- * WooCommerce Subscriptions fires woocommerce_scheduled_subscription_payment_zahls (e.g. in WP-Cron).
+ * The gateway WooCommerce uses (loads the payment gateways if needed), or null.
+ *
+ * @return WC_Zahls_Gateway|null
  */
-add_action('woocommerce_scheduled_subscription_payment', function () {
-    if (function_exists('WC')) {
-        WC()->payment_gateways();
+function zahls_get_gateway() {
+    if (!function_exists('WC') || !WC()->payment_gateways()) {
+        return null;
     }
-}, 0);
+    $gateways = WC()->payment_gateways()->payment_gateways();
+    return isset($gateways['zahls']) ? $gateways['zahls'] : null;
+}
+
+/*
+ * Webhook and renewal handler are registered exactly once, independent of how many gateway instances exist and
+ * whether WooCommerce has loaded the payment gateways yet. Registered per instance, every instance added another
+ * renewal handler, and each renewal was charged once per instance.
+ */
+add_action('woocommerce_api_wc_zahls_gateway', function () {
+    $gateway = zahls_get_gateway();
+    if ($gateway) {
+        $gateway->handle_webhook();
+    }
+});
+
+add_action('woocommerce_scheduled_subscription_payment_zahls', function ($amount, $renewal) {
+    $gateway = zahls_get_gateway();
+    if ($gateway) {
+        $gateway->process_scheduled_renewal($amount, $renewal);
+    } elseif (function_exists('wc_get_logger')) {
+        wc_get_logger()->error('Renewal not charged: the zahls.ch gateway is not available', ['source' => 'zahls']);
+    }
+}, 10, 2);
 
 
 
