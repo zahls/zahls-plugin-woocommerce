@@ -166,13 +166,16 @@ class Dispatcher
 				$payment_method_change->update_meta_data('zahls_auth_transaction_id', $pre_auth_id);
 				$payment_method_change->update_meta_data('zahls_payment_method', is_array($payment) && isset($payment['brand']) ? $payment['brand'] : '');
 				$payment_method_change->save();
+				// The renewal mode WooCommerce Subscriptions chose when the customer submitted the change, kept back
+				// until zahls.ch has the token (see process_payment); without one, the current mode stays
+				$pending_manual = (string) $payment_method_change->get_meta('_zahls_change_requires_manual');
+				$manual = $pending_manual === '' ? (bool) $payment_method_change->get_requires_manual_renewal() : $pending_manual === 'yes';
 				if ($payment_method_change->get_payment_method() !== 'zahls' && class_exists('WC_Subscriptions_Change_Payment_Gateway')) {
-					// Keep the renewal mode WooCommerce Subscriptions set at the change (e.g. auto renew turned off)
-					$manual = $payment_method_change->get_requires_manual_renewal();
 					\WC_Subscriptions_Change_Payment_Gateway::update_payment_method($payment_method_change, 'zahls');
-					$payment_method_change->set_requires_manual_renewal($manual);
-					$payment_method_change->save();
 				}
+				$payment_method_change->set_requires_manual_renewal($manual);
+				$payment_method_change->delete_meta_data('_zahls_change_requires_manual');
+				$payment_method_change->save();
 				$this->send_response('Success: Payment method updated');
 			}
 

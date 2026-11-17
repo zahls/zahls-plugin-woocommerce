@@ -136,6 +136,11 @@ class ZahlsApiService
             $response = $zahls->charge($transaction);
             return $response ?: false;
         } catch (\Zahls\ZahlsException $e) {
+            // HTTP code 0: no answer from zahls.ch (e.g. timeout), the charge may still have been made
+            wc_get_logger()->error(
+                sprintf('Charge on tokenization %s failed: %s (HTTP %d)', $transactionId, $e->getMessage(), (int) $e->getCode()),
+                ['source' => 'zahls']
+            );
         }
         return false;
     }

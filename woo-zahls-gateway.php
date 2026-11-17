@@ -343,6 +343,26 @@ function WC_Zahls_offline_gateway_init()
                 ];
             }
 
+            // WooCommerce Subscriptions sets the renewal mode it chose for the change right after this method returns,
+            // although the payment method only changes once zahls.ch has the new token (webhook). Keep the current
+            // mode until then, so that a change the customer abandons on zahls.ch changes nothing; the webhook
+            // applies the chosen mode (see Dispatcher).
+            if (CartUtil::isPaymentMethodChange($paymentMethodChangeGET)) {
+                $subscriptionId = $subscription->get_id();
+                $manualBefore = (bool) $subscription->get_requires_manual_renewal();
+                $subscription->delete_meta_data('_zahls_change_requires_manual');
+                $keepRenewalMode = null;
+                $keepRenewalMode = function ($sub) use ($subscriptionId, $manualBefore, &$keepRenewalMode) {
+                    if ($sub->get_id() !== $subscriptionId || (bool) $sub->get_requires_manual_renewal() === $manualBefore) {
+                        return;
+                    }
+                    $sub->update_meta_data('_zahls_change_requires_manual', $sub->get_requires_manual_renewal() ? 'yes' : 'no');
+                    $sub->set_requires_manual_renewal($manualBefore);
+                    remove_action('woocommerce_before_subscription_object_save', $keepRenewalMode);
+                };
+                add_action('woocommerce_before_subscription_object_save', $keepRenewalMode);
+            }
+
             // A payment method change belongs to the subscription, not to its last order
             $gatewayHolder = CartUtil::isPaymentMethodChange($paymentMethodChangeGET) ? $subscription : $order;
             $gatewayHolder->update_meta_data('zahls_gateway_id', $gateway->getId());

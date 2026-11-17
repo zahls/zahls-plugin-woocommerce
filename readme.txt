@@ -185,13 +185,13 @@ The zahls.ch support team will be happy to assist you with the installation.
 = 2.0.10 =
 * Fix: Automatic subscription renewals were charged at zahls.ch but stayed "Pending" and the subscription "On hold". The renewal is now marked paid as soon as zahls.ch confirms the charge. Please update immediately if you use subscriptions.
 * Fix: "Renew now" (early renewal) charged the customer but WooCommerce Subscriptions then asked for the payment again
-* Fix: Changing the payment method of a subscription in My Account sent the customer to the admin area instead of zahls.ch, and the new payment method was set before it was authorized
+* Fix: Changing the payment method of a subscription in My Account sent the customer to the admin area instead of zahls.ch, and the new payment method and renewal mode were set before it was authorized
 * Fix: With several subscriptions in one order, a renewal could set the paid first order and the other subscription on hold
 * Fix: A webhook sent again for an earlier payment could mark a later, unpaid renewal as paid
 * A renewal is never charged twice, also when its scheduled action runs again; a failed "Renew now" no longer puts the subscription on hold
 * Fix: Subscriptions sold through other plugins (e.g. a subscription option on a normal product) are tokenized for automatic renewals
 * Webhooks of the type "JSON" are processed
-* Log and subscription note when an automatic subscription has no zahls.ch token
+* Log and subscription note when an automatic subscription has no zahls.ch token; a rejected or failed renewal charge is logged with the reason from zahls.ch
 
 = 2.0.9 =
 * Fix: Automatic subscription renewals could be charged twice, because the renewal handler was registered twice. Please update immediately if you use subscriptions.
