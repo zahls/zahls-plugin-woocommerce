@@ -118,6 +118,11 @@ class ZahlsApiService
             $response = $zahls->getOne($zahlsTransaction);
             return $response;
         } catch (\Zahls\ZahlsException $e) {
+            // No answer (HTTP 0, e.g. timeout) or a server error: unknown, not "no such transaction". The webhook
+            // then fails, so that zahls.ch can send it again.
+            if ((int) $e->getCode() === 0 || (int) $e->getCode() >= 500) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer for transaction %d: %s (HTTP %d)', $zahlsTransactionId, $e->getMessage(), (int) $e->getCode()));
+            }
             return null;
         }
     }
@@ -154,6 +159,9 @@ class ZahlsApiService
             $zahlsGateway = $zahls->getOne($gateway);
             return $zahlsGateway;
         } catch (\Zahls\ZahlsException $e) {
+            if ((int) $e->getCode() === 0 || (int) $e->getCode() >= 500) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer for gateway %d: %s (HTTP %d)', $gatewayId, $e->getMessage(), (int) $e->getCode()));
+            }
             throw new \Exception('No gateway found by ID: '. $gatewayId);
         }
     }

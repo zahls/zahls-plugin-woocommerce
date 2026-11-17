@@ -26,6 +26,21 @@ class StatusUtil
     }
 
     /**
+     * Whether the transaction is one of the gateway's (payments and refunds are listed in its invoices).
+     */
+    public static function gatewayHasTransaction(Gateway $gateway, int $transactionId): bool
+    {
+        foreach ((array) $gateway->getInvoices() as $invoice) {
+            foreach ((array) ($invoice['transactions'] ?? []) as $transaction) {
+                if ((int) ($transaction['id'] ?? 0) === $transactionId) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * @param int $orderTotal
      * @param int $confirmedAmount
      * @param int $refundedAmount
@@ -36,7 +51,7 @@ class StatusUtil
       	$orderTotal = $orderTotal_input * 100;
         $paidAmount = $confirmedAmount + $refundedAmount;
 
-        if (strval($paidAmount) == strval($orderTotal)){ error_log("confirmed"); return Transaction::CONFIRMED; }
+        if (strval($paidAmount) == strval($orderTotal)){ return Transaction::CONFIRMED; }
         if ($confirmedAmount == abs($refundedAmount) && $confirmedAmount > 0){ return Transaction::REFUNDED; }
         if ($confirmedAmount > abs($refundedAmount) && abs($refundedAmount) > 0) { return Transaction::PARTIALLY_REFUNDED; }
         if ($confirmedAmount < $orderTotal){ return Transaction::WAITING; } // Partially paid

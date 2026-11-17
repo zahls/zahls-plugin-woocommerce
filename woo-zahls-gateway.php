@@ -5,7 +5,7 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.10
+ * Version: 2.0.11
  * Requires at least: 4.6
  * Tested up to: 7.1
  * Requires PHP: 7.4
@@ -15,7 +15,7 @@
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.10');
+define('ZAHLS_VERSION', '2.0.11');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -366,6 +366,11 @@ function WC_Zahls_offline_gateway_init()
             // A payment method change belongs to the subscription, not to its last order
             $gatewayHolder = CartUtil::isPaymentMethodChange($paymentMethodChangeGET) ? $subscription : $order;
             $gatewayHolder->update_meta_data('zahls_gateway_id', $gateway->getId());
+            // Every payment page of the order (the customer may pay an earlier one, e.g. in another tab): the webhook
+            // accepts a payment only from one of these
+            $gatewayIds = array_map('intval', (array) $gatewayHolder->get_meta('zahls_gateway_ids'));
+            $gatewayIds[] = (int) $gateway->getId();
+            $gatewayHolder->update_meta_data('zahls_gateway_ids', array_slice(array_values(array_unique(array_filter($gatewayIds))), -20));
             $gatewayHolder->save();
 
             $language = substr(get_locale(), 0, 2);
@@ -515,8 +520,6 @@ function WC_Zahls_offline_gateway_init()
 	                                <div class="inside">
 	                                    <div class="support-widget">
 	                                        <p>
-	                                        <img style="width: 70%;margin: 0 auto;position: relative;display: inherit;" src="https://static.siebenberge.com/media/plugins/woocommerce/<?php echo $domain; ?>/zahls.svg">
-	                                        <br/>
                                             <?php _e('Do you have a question, idea, problem or praise? Please feel free to contact us.', 'zahls-ch-payment-gateway'); ?>    
 	                                        </p>
                                             <p><a href="mailto:support@zahls.ch" target="_blank">support@zahls.ch</a><br>
@@ -587,6 +590,19 @@ function WC_Zahls_offline_gateway_init()
             });
         } */
 
+        /**
+         * The card logos of a logo setting that the plugin has an icon for.
+         *
+         * @param mixed $setting saved multiselect value.
+         * @return string[]
+         */
+        public static function cardLogos($setting)
+        {
+            return array_values(array_filter(is_array($setting) ? $setting : [], function ($logo) {
+                return is_string($logo) && preg_match('/^[a-z0-9-]+$/', $logo) && file_exists(__DIR__ . '/cardicons/card_' . $logo . '.svg');
+            }));
+        }
+
          public function get_icon()
         {
             $style = version_compare(WC()->version, '2.6', '>=') ? 'margin-left: 0.3em;' : '';
@@ -596,17 +612,20 @@ function WC_Zahls_offline_gateway_init()
             $paymentMethodChange = CartUtil::isPaymentMethodChange($paymentMethodChangeGET);
 
             $hideStyle = $subscriptionPayment ? 'display: none' : '';
-            $logos = $paymentMethodChange ? $this->subscriptionLogos : $this->logos;
+            // A multiselect saved empty is an empty string, and one never saved has no array either
+            $subscriptionLogos = self::cardLogos($this->subscriptionLogos);
+            $logos = self::cardLogos($paymentMethodChange ? $this->subscriptionLogos : $this->logos);
 
             $icon = '';
             //if $logos is an array¨
             if(is_array($logos)){
            
             foreach ($logos as $logo) {
-                if ($subscriptionPayment && !$paymentMethodChange && in_array($logo, $this->subscriptionLogos)) {
-                    $icon .= '<img class="tokenization" src="' . WC_HTTPS::force_https_url(plugins_url('cardicons/card_' . $logo . '.svg', __FILE__)) . '" alt="' . $logo . '" id="' . $logo . '" width="32" style="'.$style.'" />';
+                $src = esc_url(WC_HTTPS::force_https_url(plugins_url('cardicons/card_' . $logo . '.svg', __FILE__)));
+                if ($subscriptionPayment && !$paymentMethodChange && in_array($logo, $subscriptionLogos, true)) {
+                    $icon .= '<img class="tokenization" src="' . $src . '" alt="' . esc_attr($logo) . '" id="' . esc_attr($logo) . '" width="32" style="' . esc_attr($style) . '" />';
                 }
-                $icon .= '<img class="onetime" src="' . WC_HTTPS::force_https_url(plugins_url('cardicons/card_' . $logo . '.svg', __FILE__)) . '" alt="' . $logo . '" id="' . $logo . '" width="32" style="' . $style . $hideStyle . '" />';
+                $icon .= '<img class="onetime" src="' . $src . '" alt="' . esc_attr($logo) . '" id="' . esc_attr($logo) . '" width="32" style="' . esc_attr($style . $hideStyle) . '" />';
             }}
 
             // Add a wrapper around the images to allow styling

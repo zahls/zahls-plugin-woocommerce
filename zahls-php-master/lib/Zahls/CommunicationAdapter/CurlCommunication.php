@@ -34,6 +34,9 @@ class CurlCommunication extends AbstractCommunication
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_USERAGENT => 'zahls-php/1.8.0',
             CURLOPT_SSL_VERIFYPEER => true,
+            // A request without answer must not hang a checkout or a webhook until the web server gives up
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
             CURLOPT_CAINFO => dirname(__DIR__) . '/certs/ca.pem',
         );
         if (defined(PHP_QUERY_RFC3986)) {
