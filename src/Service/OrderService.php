@@ -61,7 +61,8 @@ class OrderService
                 $newTransactionsStatus = 'cancelled';
                 $newTransactionsStatus = $this->getCustomTransactionStatus($newTransactionsStatus);
 
-                if ($order->has_status(['processing', 'completed', $newTransactionsStatus])) {
+                // Never for a paid order (also refunded or in a custom status): e.g. a token that expires later
+                if ($order->get_date_paid() || $order->has_status(['processing', 'completed', $newTransactionsStatus])) {
                     break;
                 }
 
@@ -70,7 +71,7 @@ class OrderService
             case \Zahls\Models\Response\Transaction::ERROR:
                 $newTransactionsStatus = 'failed';
                 $newTransactionsStatus = $this->getCustomTransactionStatus($newTransactionsStatus);
-                if ($order->has_status(['processing', 'completed', $newTransactionsStatus])) {
+                if ($order->get_date_paid() || $order->has_status(['processing', 'completed', $newTransactionsStatus])) {
                     break;
                 }
                 $order->update_status($newTransactionsStatus, __('An error occured while processing this payment', 'wc-zahls-gateway'));

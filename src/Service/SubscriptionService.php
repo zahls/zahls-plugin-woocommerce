@@ -100,11 +100,13 @@ class SubscriptionService
                     $this->renewalFailed($subscription, $renewal);
                     continue;
                 }
-                // Any other status (e.g. waiting): the webhook of this transaction completes the renewal
+                // Any other status (e.g. waiting): the webhook of this transaction completes the renewal. On hold, not
+                // pending: WooCommerce Subscriptions deletes an early renewal ("Renew now") that still needs payment.
                 wc_get_logger()->info(
                     sprintf('Renewal order %d: charge %s is %s, waiting for zahls.ch', $renewal->get_id(), $charged->getId(), $status),
                     ['source' => 'zahls']
                 );
+                $renewal->update_status('on-hold', sprintf(__('zahls.ch has not completed the charge %s yet (%s).', 'wc-zahls-gateway'), $charged->getId(), $status));
                 continue;
             }
 

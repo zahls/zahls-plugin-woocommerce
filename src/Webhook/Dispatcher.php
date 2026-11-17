@@ -188,6 +188,17 @@ class Dispatcher
 
 			$newTransactionStatus = $transaction->getStatus();
 			if ($charged_order) {
+				// A charge zahls.ch accepted and failed later: the renewal failed as if the charge had been declined
+				// right away (WooCommerce Subscriptions puts the subscription on hold and retries; an early renewal
+				// leaves it active), and a retry charges again
+				if (in_array($newTransactionStatus, [Transaction::DECLINED, Transaction::ERROR, Transaction::CANCELLED, Transaction::EXPIRED], true)) {
+					if (!$order->is_paid() && !$order->has_status(['failed', 'cancelled'])) {
+						$early = function_exists('wcs_order_contains_early_renewal') && wcs_order_contains_early_renewal($order);
+						$order->set_transaction_id('');
+						$order->update_status($early ? 'cancelled' : 'failed', sprintf(__('zahls.ch did not complete the charge %s (%s).', 'wc-zahls-gateway'), $transaction->getId(), $newTransactionStatus));
+					}
+					$this->send_response('Success: Renewal charge failed');
+				}
 				// A charge on the token is its own payment: its gateway (the first order's) holds all charges
 				if ($newTransactionStatus === Transaction::CONFIRMED) {
 					$newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), (int) $transaction->getAmount(), 0);
