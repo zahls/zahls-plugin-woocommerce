@@ -37,6 +37,13 @@ class Dispatcher
 	{
 		try {
 			$resp = $_REQUEST;
+			// Webhook type "JSON" in the zahls.ch backend: the data is the request body, not form fields
+			if (empty($resp['transaction'])) {
+				$json = json_decode((string) file_get_contents('php://input'), true);
+				if (is_array($json)) {
+					$resp = $json;
+				}
+			}
 			$reference = isset($resp['transaction']['invoice']['referenceId']) ? (string) $resp['transaction']['invoice']['referenceId'] : '';
 			$order_id = $reference;
 			$gateway_id = isset($resp['transaction']['invoice']['paymentRequestId']) ? $resp['transaction']['invoice']['paymentRequestId'] : '';
@@ -110,7 +117,30 @@ class Dispatcher
 				}
 			}
 
-			if ($subscriptions) {
+			// A renewal charged on the token: the renewal order recorded the id of the charge (all subscriptions of
+			// one order share the token and the reference, so they cannot tell which subscription was renewed)
+			$charged_order = null;
+			if ($has_pre_auth && !$is_authorization) {
+				$found = wc_get_orders(['transaction_id' => (string) $transaction->getId(), 'limit' => 1]);
+				$charged_order = $found ? reset($found) : null;
+				// Only a renewal of a subscription of the referenced order
+				if ($charged_order && function_exists('wcs_get_subscriptions_for_order')) {
+					$renewed = wcs_get_subscriptions_for_order($charged_order, ['order_type' => 'any']);
+					if (!array_intersect(array_keys($renewed), array_keys($subscriptions))) {
+						$charged_order = null;
+					}
+				}
+			}
+
+			$payment_method_change = null;
+			if ($charged_order) {
+				$order_id = $charged_order->get_id();
+				$subscriptions = function_exists('wcs_get_subscriptions_for_order') ? wcs_get_subscriptions_for_order($charged_order, ['order_type' => 'any']) : [];
+			} elseif ($subscriptions) {
+				// The reference of a payment method change is the subscription itself
+				if ($is_authorization && function_exists('wcs_is_subscription') && wcs_is_subscription($order_id)) {
+					$payment_method_change = reset($subscriptions);
+				}
 				// Identify the correct order_id
 				// Automatic subscription payment > order_id is already valid and matches the referenceId. It must not be overwritten
 				// Payment method change > $order_id is a subscriptionId and must be overwritten
@@ -147,6 +177,15 @@ class Dispatcher
 			}
 
 			$this->order_service->handleTransactionStatus($order, $subscriptions, $transaction, $newTransactionStatus, $pre_auth_id);
+
+			// The new payment method is only set once zahls.ch has the new token (see woocommerce_subscriptions_update_payment_via_pay_shortcode)
+			if ($payment_method_change && $pre_auth_id !== '' && class_exists('WC_Subscriptions_Change_Payment_Gateway')) {
+				$payment_method_change = wcs_get_subscription($payment_method_change->get_id());
+				if ($payment_method_change->get_payment_method() !== 'zahls') {
+					\WC_Subscriptions_Change_Payment_Gateway::update_payment_method($payment_method_change, 'zahls');
+					$payment_method_change->save();
+				}
+			}
 			$this->send_response( 'Success: Processed webhook response' );
 
 		} catch (\Throwable $e) {

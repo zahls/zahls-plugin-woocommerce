@@ -122,14 +122,19 @@ class ZahlsApiService
         }
     }
 
+    /**
+     * Charges an amount on a tokenization.
+     *
+     * @return \Zahls\Models\Response\Transaction|false the transaction zahls.ch created, false if rejected
+     */
     public function chargeTransaction($transactionId, $amount) {
         $zahls = $this->getInterface();
         $transaction = new \Zahls\Models\Request\Transaction();
         $transaction->setId($transactionId);
-        $transaction->setAmount(floatval($amount) * 100);
+        $transaction->setAmount(round(floatval($amount) * 100));
         try {
-            $zahls->charge($transaction);
-            return true;
+            $response = $zahls->charge($transaction);
+            return $response ?: false;
         } catch (\Zahls\ZahlsException $e) {
         }
         return false;

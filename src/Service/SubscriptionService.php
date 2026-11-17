@@ -65,9 +65,16 @@ class SubscriptionService
              * @param float            $amount         renewal amount.
              * @param bool             $charged        whether zahls.ch accepted the charge.
              */
-            do_action('zahls_renewal_charge', $subscription, $tokenizationId, $amount, $charged);
+            do_action('zahls_renewal_charge', $subscription, $tokenizationId, $amount, (bool) $charged);
 
             if ($charged) {
+                // The webhook finds this renewal by the transaction id (all subscriptions of an order share the token)
+                $renewal->set_transaction_id((string) $charged->getId());
+                $renewal->save();
+                if ($charged->getStatus() === \Zahls\Models\Response\Transaction::CONFIRMED && !$renewal->is_paid()) {
+                    $renewal->update_meta_data('zahls_payment_method', $subscription->get_meta('zahls_payment_method'));
+                    $renewal->payment_complete((string) $charged->getId());
+                }
                 continue;
             }
 
