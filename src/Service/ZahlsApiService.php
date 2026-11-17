@@ -41,7 +41,7 @@ class ZahlsApiService
             $gateway->setButtonText($customButtonText);
         }
 
-        $gateway->setAmount($totalAmount * 100);
+        $gateway->setAmount(round($totalAmount * 100));
         $gateway->setCurrency($currency);
         $gateway->setPreAuthorization($preAuthorization);
         $gateway->setChargeOnAuthorization($chargeOnAuth);
@@ -122,15 +122,25 @@ class ZahlsApiService
         }
     }
 
+    /**
+     * Charges an amount on a tokenization.
+     *
+     * @return \Zahls\Models\Response\Transaction|false the transaction zahls.ch created, false if rejected
+     */
     public function chargeTransaction($transactionId, $amount) {
         $zahls = $this->getInterface();
         $transaction = new \Zahls\Models\Request\Transaction();
         $transaction->setId($transactionId);
-        $transaction->setAmount(floatval($amount) * 100);
+        $transaction->setAmount(round(floatval($amount) * 100));
         try {
-            $zahls->charge($transaction);
-            return true;
+            $response = $zahls->charge($transaction);
+            return $response ?: false;
         } catch (\Zahls\ZahlsException $e) {
+            // HTTP code 0: no answer from zahls.ch (e.g. timeout), the charge may still have been made
+            wc_get_logger()->error(
+                sprintf('Charge on tokenization %s failed: %s (HTTP %d)', $transactionId, $e->getMessage(), (int) $e->getCode()),
+                ['source' => 'zahls']
+            );
         }
         return false;
     }

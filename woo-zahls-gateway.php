@@ -5,7 +5,7 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.9
+ * Version: 2.0.10
  * Requires at least: 4.6
  * Tested up to: 7.1
  * Requires PHP: 7.4
@@ -15,7 +15,7 @@
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.9');
+define('ZAHLS_VERSION', '2.0.10');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -271,7 +271,12 @@ function WC_Zahls_offline_gateway_init()
             // Classic checkout posts the form field, the block checkout passes it as payment method data
             $allowRecurring = isset($_POST['zahls-allow-recurring']) ? wc_clean(wp_unslash($_POST['zahls-allow-recurring'])) : null;
 
-            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $allowRecurring) ) {
+            // Subscriptions of this order, also when the cart does not show them as subscription products
+            $orderHasSubscription = !CartUtil::isPaymentMethodChange($paymentMethodChangeGET)
+                && function_exists('wcs_order_contains_subscription')
+                && wcs_order_contains_subscription($order, ['parent', 'resubscribe', 'switch']);
+
+            switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $allowRecurring, $orderHasSubscription) ) {
                 case CartUtil::ORDER_SUBSCRIPTION_AUTO:
                     $preAuthorization = true;
 
@@ -338,12 +343,44 @@ function WC_Zahls_offline_gateway_init()
                 ];
             }
 
-            $order->update_meta_data('zahls_gateway_id', $gateway->getId());
-            $order->save();
+            // WooCommerce Subscriptions sets the renewal mode it chose for the change right after this method returns,
+            // although the payment method only changes once zahls.ch has the new token (webhook). Keep the current
+            // mode until then, so that a change the customer abandons on zahls.ch changes nothing; the webhook
+            // applies the chosen mode (see Dispatcher).
+            if (CartUtil::isPaymentMethodChange($paymentMethodChangeGET)) {
+                $subscriptionId = $subscription->get_id();
+                $manualBefore = (bool) $subscription->get_requires_manual_renewal();
+                $subscription->delete_meta_data('_zahls_change_requires_manual');
+                $keepRenewalMode = null;
+                $keepRenewalMode = function ($sub) use ($subscriptionId, $manualBefore, &$keepRenewalMode) {
+                    if ($sub->get_id() !== $subscriptionId || (bool) $sub->get_requires_manual_renewal() === $manualBefore) {
+                        return;
+                    }
+                    $sub->update_meta_data('_zahls_change_requires_manual', $sub->get_requires_manual_renewal() ? 'yes' : 'no');
+                    $sub->set_requires_manual_renewal($manualBefore);
+                    remove_action('woocommerce_before_subscription_object_save', $keepRenewalMode);
+                };
+                add_action('woocommerce_before_subscription_object_save', $keepRenewalMode);
+            }
+
+            // A payment method change belongs to the subscription, not to its last order
+            $gatewayHolder = CartUtil::isPaymentMethodChange($paymentMethodChangeGET) ? $subscription : $order;
+            $gatewayHolder->update_meta_data('zahls_gateway_id', $gateway->getId());
+            $gatewayHolder->save();
 
             $language = substr(get_locale(), 0, 2);
             !in_array($language, self::LANG) ? $language = self::LANG[0] : null;
             $redirect = str_replace('?', $language . '/?', $gateway->getLink());
+
+            // WooCommerce Subscriptions sends the customer on with wp_safe_redirect() after a payment method change,
+            // which only allows the shop's own host
+            $zahlsHost = CartUtil::isPaymentMethodChange($paymentMethodChangeGET) ? wp_parse_url($redirect, PHP_URL_HOST) : null;
+            if ($zahlsHost) {
+                add_filter('allowed_redirect_hosts', function ($hosts) use ($zahlsHost) {
+                    $hosts[] = $zahlsHost;
+                    return $hosts;
+                });
+            }
 
             // Return redirect
             return [
@@ -627,6 +664,14 @@ add_action('woocommerce_api_wc_zahls_gateway', function () {
         $gateway->handle_webhook();
     }
 });
+
+/*
+ * A payment method change to zahls.ch only takes effect when the customer has authorized the new card or TWINT
+ * on zahls.ch (webhook "authorized"), not already when the form is submitted.
+ */
+add_filter('woocommerce_subscriptions_update_payment_via_pay_shortcode', function ($update, $new_payment_method) {
+    return $new_payment_method === 'zahls' ? false : $update;
+}, 10, 2);
 
 add_action('woocommerce_scheduled_subscription_payment_zahls', function ($amount, $renewal) {
     $gateway = zahls_get_gateway();
