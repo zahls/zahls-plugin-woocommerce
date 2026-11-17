@@ -41,7 +41,7 @@ class ZahlsApiService
             $gateway->setButtonText($customButtonText);
         }
 
-        $gateway->setAmount($totalAmount * 100);
+        $gateway->setAmount(round($totalAmount * 100));
         $gateway->setCurrency($currency);
         $gateway->setPreAuthorization($preAuthorization);
         $gateway->setChargeOnAuthorization($chargeOnAuth);

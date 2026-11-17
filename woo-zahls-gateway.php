@@ -274,7 +274,7 @@ function WC_Zahls_offline_gateway_init()
             // Subscriptions of this order, also when the cart does not show them as subscription products
             $orderHasSubscription = !CartUtil::isPaymentMethodChange($paymentMethodChangeGET)
                 && function_exists('wcs_order_contains_subscription')
-                && wcs_order_contains_subscription($order, ['parent', 'resubscribe', 'switch', 'renewal']);
+                && wcs_order_contains_subscription($order, ['parent', 'resubscribe', 'switch']);
 
             switch (CartUtil::getOrderType($cart, $paymentMethodChangeGET, $allowRecurring, $orderHasSubscription) ) {
                 case CartUtil::ORDER_SUBSCRIPTION_AUTO:
@@ -354,7 +354,7 @@ function WC_Zahls_offline_gateway_init()
 
             // WooCommerce Subscriptions sends the customer on with wp_safe_redirect() after a payment method change,
             // which only allows the shop's own host
-            $zahlsHost = wp_parse_url($redirect, PHP_URL_HOST);
+            $zahlsHost = CartUtil::isPaymentMethodChange($paymentMethodChangeGET) ? wp_parse_url($redirect, PHP_URL_HOST) : null;
             if ($zahlsHost) {
                 add_filter('allowed_redirect_hosts', function ($hosts) use ($zahlsHost) {
                     $hosts[] = $zahlsHost;

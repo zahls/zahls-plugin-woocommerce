@@ -22,7 +22,7 @@ class OrderService
                 $order->update_status($newTransactionsStatus, __('Awaiting payment', 'wc-zahls-gateway'));
                 break;
             case \Zahls\Models\Response\Transaction::CONFIRMED:
-                $this->setOrderPaid($order, $zahlsTransaction->getPayment()['brand']);
+                $this->setOrderPaid($order, $zahlsTransaction->getPayment()['brand'], (string) $zahlsTransaction->getId());
                 break;
             case \Zahls\Models\Response\Transaction::AUTHORIZED:
                 foreach ($subscriptions as $subscription) {
@@ -78,12 +78,12 @@ class OrderService
         }
     }
 
-    private function setOrderPaid($order, $paymentBrand) {
+    private function setOrderPaid($order, $paymentBrand, $transactionId = '') {
         if ($order->has_status(['processing', 'completed'])) {
             return;
         }
         $order->update_meta_data('zahls_payment_method', $paymentBrand);
-        $order->payment_complete();
+        $order->payment_complete($transactionId);
         $order->save();
         $this->warnAboutSubscriptionsWithoutToken($order);
         // Remove cart (there is none when called from the webhook)
