@@ -5,7 +5,7 @@
  * Author: siebenberge gmbh
  * Author URI: https://www.siebenberge.com
  * Text Domain: zahls-ch-payment-gateway
- * Version: 2.0.11
+ * Version: 2.0.12
  * Requires at least: 4.6
  * Tested up to: 7.1
  * Requires PHP: 7.4
@@ -15,7 +15,7 @@
 
 if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) return;
 
-define('ZAHLS_VERSION', '2.0.11');
+define('ZAHLS_VERSION', '2.0.12');
 define('ZAHLS_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ZAHLS_PLUGIN_PATH', plugin_dir_path(__FILE__));
 
@@ -172,6 +172,9 @@ function WC_Zahls_offline_gateway_init()
 		private static $hooksRegistered = false;
 
 		protected function register_hooks() {
+            // "Refund via zahls.ch" on the order in WooCommerce
+            $this->supports = array_values(array_unique(array_merge($this->supports, ['refunds'])));
+
             // Get config data
             // Add subscription support if activated
             if ($this->subscriptionsEnabled === 'yes') {
@@ -591,6 +594,135 @@ function WC_Zahls_offline_gateway_init()
         } */
 
         /**
+         * Refunds (part of) the order's payment at zahls.ch ("Refund via zahls.ch" in WooCommerce).
+         *
+         * @param int        $order_id order.
+         * @param float|null $amount   amount to refund.
+         * @param string     $reason   reason entered in WooCommerce.
+         * @return bool|WP_Error
+         */
+        public function process_refund($order_id, $amount = null, $reason = '')
+        {
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                return new WP_Error('zahls_refund', __('Order not found.', 'zahls-ch-payment-gateway'));
+            }
+            if ($amount === null || (float) $amount <= 0) {
+                return new WP_Error('zahls_refund', __('Enter the amount to refund.', 'zahls-ch-payment-gateway'));
+            }
+            try {
+                $transactionId = $this->refundableTransactionId($order);
+                if (!$transactionId) {
+                    return new WP_Error('zahls_refund', __('No zahls.ch payment found for this order. Refund it in the zahls.ch backend.', 'zahls-ch-payment-gateway'));
+                }
+                $refund = $this->zahlsApiService->refundTransaction($transactionId, $amount);
+            } catch (\Throwable $e) {
+                wc_get_logger()->error(sprintf('Refund of order %d failed: %s', $order->get_id(), $e->getMessage()), ['source' => 'zahls']);
+                return new WP_Error('zahls_refund', sprintf(__('zahls.ch did not refund the payment: %s', 'zahls-ch-payment-gateway'), $e->getMessage()));
+            }
+            $order->add_order_note(sprintf(
+                /* translators: 1: amount, 2: zahls.ch transaction id, 3: reason */
+                __('Refunded %1$s via zahls.ch (payment %2$s).%3$s', 'zahls-ch-payment-gateway'),
+                wc_price($amount, ['currency' => $order->get_currency()]),
+                $transactionId,
+                $reason !== '' ? ' ' . sprintf(__('Reason: %s', 'zahls-ch-payment-gateway'), $reason) : ''
+            ));
+            return true;
+        }
+
+        /**
+         * The zahls.ch payment of the order: the transaction id WooCommerce recorded, otherwise (orders paid with
+         * older versions) the largest confirmed payment on the order's payment pages.
+         */
+        private function refundableTransactionId($order)
+        {
+            if ($order->get_transaction_id() !== '') {
+                return (int) $order->get_transaction_id();
+            }
+            $gatewayIds = array_map('intval', (array) $order->get_meta('zahls_gateway_ids'));
+            $gatewayIds[] = (int) $order->get_meta('zahls_gateway_id');
+            $best = null;
+            foreach (array_unique(array_filter($gatewayIds)) as $gatewayId) {
+                try {
+                    $gateway = $this->zahlsApiService->getZahlsGateway($gatewayId);
+                } catch (\RuntimeException $e) {
+                    throw $e;
+                } catch (\Exception $e) {
+                    continue;
+                }
+                foreach ((array) $gateway->getInvoices() as $invoice) {
+                    foreach ((array) ($invoice['transactions'] ?? []) as $transaction) {
+                        if (in_array($transaction['status'] ?? '', ['confirmed', 'partially-refunded'], true) && (int) ($transaction['amount'] ?? 0) > 0
+                            && (!$best || (int) $transaction['amount'] > (int) $best['amount'])) {
+                            $best = $transaction;
+                        }
+                    }
+                }
+            }
+            return $best ? (int) $best['id'] : 0;
+        }
+
+        /**
+         * zahls.ch payment method id => the plugin's icon for it.
+         */
+        const PAYMENT_METHOD_ICONS = [
+            'post-finance-pay' => 'postfinance_card',
+            'postfinance-card' => 'postfinance_card',
+            'postfinance-efinance' => 'postfinance_efinance',
+        ];
+
+        /**
+         * Payment methods that can be stored for recurring payments (shown on a tokenization payment page).
+         */
+        const RECURRING_ICONS = ['twint', 'visa', 'mastercard', 'american_express', 'diners_club', 'discover', 'jcb', 'maestro', 'postfinance_card', 'apple_pay', 'google_pay', 'samsung_pay'];
+
+        /**
+         * Sets the logos to the payment methods active on the zahls.ch instance.
+         *
+         * @return array{logos: string[], subscription_logos: string[], unknown: string[]}
+         * @throws \Exception when zahls.ch cannot be asked
+         */
+        public function syncPaymentMethods()
+        {
+            $logos = [];
+            $unknown = [];
+            foreach ($this->zahlsApiService->getActivePaymentMethodIds(get_woocommerce_currency()) as $id) {
+                $icon = self::PAYMENT_METHOD_ICONS[$id] ?? str_replace('-', '_', $id);
+                if (self::cardLogos([$icon])) {
+                    $logos[] = $icon;
+                } else {
+                    $unknown[] = $id;
+                }
+            }
+            $logos = array_values(array_unique($logos));
+            $subscriptionLogos = array_values(array_intersect($logos, self::RECURRING_ICONS));
+            $this->update_option('logos', $logos);
+            $this->update_option('subscription_logos', $subscriptionLogos);
+            $this->logos = $logos;
+            $this->subscriptionLogos = $subscriptionLogos;
+            return ['logos' => $logos, 'subscription_logos' => $subscriptionLogos, 'unknown' => $unknown];
+        }
+
+        /**
+         * Settings field: button that takes the payment methods from zahls.ch.
+         */
+        public function generate_zahls_sync_html($key, $data)
+        {
+            $url = wp_nonce_url(admin_url('admin-post.php?action=zahls_sync_payment_methods'), 'zahls_sync_payment_methods');
+            ob_start();
+            ?>
+            <tr valign="top">
+                <th scope="row" class="titledesc"><?php echo esc_html($data['title']); ?></th>
+                <td class="forminp">
+                    <a class="button" href="<?php echo esc_url($url); ?>"><?php esc_html_e('Take active payment methods from zahls.ch', 'zahls-ch-payment-gateway'); ?></a>
+                    <p class="description"><?php echo esc_html($data['description']); ?></p>
+                </td>
+            </tr>
+            <?php
+            return ob_get_clean();
+        }
+
+        /**
          * The card logos of a logo setting that the plugin has an icon for.
          *
          * @param mixed $setting saved multiselect value.
@@ -671,6 +803,47 @@ function zahls_get_gateway() {
     $gateways = WC()->payment_gateways()->payment_gateways();
     return isset($gateways['zahls']) ? $gateways['zahls'] : null;
 }
+
+/*
+ * Settings: "Take active payment methods from zahls.ch" (button of the zahls_sync settings field).
+ */
+add_action('admin_post_zahls_sync_payment_methods', function () {
+    if (!current_user_can('manage_woocommerce')) {
+        wp_die(esc_html__('You are not allowed to change the payment settings.', 'zahls-ch-payment-gateway'), 403);
+    }
+    check_admin_referer('zahls_sync_payment_methods');
+    $gateway = zahls_get_gateway();
+    try {
+        if (!$gateway) {
+            throw new \Exception(__('The zahls.ch payment method is not loaded.', 'zahls-ch-payment-gateway'));
+        }
+        $result = $gateway->syncPaymentMethods();
+        $notice = ['type' => 'success', 'message' => sprintf(
+            /* translators: 1: logos, 2: logos for recurring payments */
+            __('Payment methods taken from zahls.ch: %1$s. For recurring payments: %2$s.', 'zahls-ch-payment-gateway'),
+            $result['logos'] ? implode(', ', $result['logos']) : '–',
+            $result['subscription_logos'] ? implode(', ', $result['subscription_logos']) : '–'
+        )];
+        if ($result['unknown']) {
+            $notice['message'] .= ' ' . sprintf(__('Without logo in the plugin: %s.', 'zahls-ch-payment-gateway'), implode(', ', $result['unknown']));
+        }
+    } catch (\Throwable $e) {
+        $notice = ['type' => 'error', 'message' => sprintf(__('The payment methods could not be taken from zahls.ch: %s', 'zahls-ch-payment-gateway'), $e->getMessage())];
+    }
+    set_transient('zahls_sync_notice_' . get_current_user_id(), $notice, 60);
+    wp_safe_redirect(admin_url('admin.php?page=wc-settings&tab=checkout&section=zahls'));
+    exit;
+});
+
+add_action('admin_notices', function () {
+    $key = 'zahls_sync_notice_' . get_current_user_id();
+    $notice = get_transient($key);
+    if (!$notice) {
+        return;
+    }
+    delete_transient($key);
+    printf('<div class="notice notice-%s is-dismissible"><p>%s</p></div>', esc_attr($notice['type']), esc_html($notice['message']));
+});
 
 /*
  * Webhook and renewal handler are registered exactly once, independent of how many gateway instances exist and

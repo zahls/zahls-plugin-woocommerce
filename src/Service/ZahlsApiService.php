@@ -161,6 +161,39 @@ class ZahlsApiService
     }
 	
 
+    /**
+     * Refunds (part of) a payment at zahls.ch. zahls.ch creates a refund transaction of its own and sends its webhook.
+     *
+     * @throws \Zahls\ZahlsException when zahls.ch refuses (e.g. amount higher than what is left) or does not answer
+     */
+    public function refundTransaction($transactionId, $amount) {
+        $zahls = $this->getInterface();
+        $transaction = new \Zahls\Models\Request\Transaction();
+        $transaction->setId((int) $transactionId);
+        $transaction->setAmount((int) round(floatval($amount) * 100));
+        return $zahls->refund($transaction);
+    }
+
+    /**
+     * Ids of the payment methods active on the zahls.ch instance (e.g. "visa", "twint", "post-finance-pay").
+     *
+     * @return string[]
+     * @throws \Zahls\ZahlsException
+     */
+    public function getActivePaymentMethodIds($currency = '') {
+        $zahls = $this->getInterface();
+        $filter = new \Zahls\Models\Request\PaymentMethod();
+        $filter->setFilterPaymentType('one-time');
+        if ($currency) {
+            $filter->setFilterCurrency($currency);
+        }
+        $ids = [];
+        foreach ((array) $zahls->getAll($filter) as $method) {
+            $ids[] = (string) $method->getId();
+        }
+        return array_values(array_unique(array_filter($ids)));
+    }
+
     public function getZahlsGateway($gatewayId) {
         $zahls = $this->getInterface();
         $gateway = new \Zahls\Models\Request\Gateway();

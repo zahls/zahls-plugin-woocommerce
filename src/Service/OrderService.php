@@ -44,7 +44,8 @@ class OrderService
 				if ($zahlsTransaction->getAmount())
                 $newTransactionsStatus = 'refunded';				
                 $newTransactionsStatus = $this->getCustomTransactionStatus($newTransactionsStatus);
-                if ($order->get_status() === $newTransactionsStatus) {
+                // Refunded in WooCommerce ("Refund via zahls.ch"): WooCommerce records it and sets the status itself
+                if ($order->get_status() === $newTransactionsStatus || (float) $order->get_total_refunded() >= (float) $order->get_total() - 0.001) {
                     break;
                 }
                 $order->update_status($newTransactionsStatus, __('Payment was fully refunded', 'wc-zahls-gateway'));

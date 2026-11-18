@@ -5,7 +5,7 @@ Tags: twint, kreditkarten, postfinance, payrexx, stripe
 Requires at least: 4.6
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.0.11
+Stable tag: 2.0.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -181,6 +181,10 @@ The zahls.ch support team will be happy to assist you with the installation.
 
 
 == Changelog ==
+
+= 2.0.12 =
+* New: Refunds from WooCommerce ("Refund via zahls.ch" on the order), in full or in part, also for subscription renewals
+* New: "Take active payment methods from zahls.ch" in the settings sets the logos to the payment methods active on the zahls.ch instance (for recurring payments: those that can be stored)
 
 = 2.0.11 =
 * Security: A webhook is applied to an order only if its reference is exactly the order's and the payment belongs to a payment page the plugin created for that order. Before, a webhook could name another payment page and with it mark an unpaid order as paid or a paid order as refunded, and payments of another shop on the same zahls.ch instance with a similar prefix could change orders.

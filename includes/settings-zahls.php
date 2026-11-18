@@ -56,6 +56,12 @@ $settings = array(
     'desc_tip' => true,
   ),
 
+  'sync_payment_methods' => array(
+    'title' => __('Payment methods', 'zahls-ch-payment-gateway'),
+    'type' => 'zahls_sync',
+    'description' => __('Takes the payment methods that are active on your zahls.ch instance as the logos below (for recurring payments: those that can be stored). Save the settings first if you changed the instance or API key.', 'zahls-ch-payment-gateway'),
+  ),
+
   'logos' => array(
     'title' => __('Logos', 'zahls-ch-payment-gateway'),
     'type' => 'multiselect',
@@ -89,6 +95,7 @@ $settings = array(
       'elv' => 'ELV',
       'ideal' => 'iDEAL',
       'invoice' => 'Invoice',
+      'bank_transfer' => 'Bank Transfer',
       'myone' => 'My One',
       'paysafecard' => 'Paysafe Card',
       'swissbilling' => 'SwissBilling',
@@ -146,6 +153,13 @@ if (class_exists('\WC_Subscriptions')) {
         'american_express' => 'American Express',
         'postfinance_card' => 'PostFinance Card',
 		'postfinance_efinance' => 'PostFinance E-Finance',
+        'diners_club' => 'Diners Club',
+        'discover' => 'Discover',
+        'jcb' => 'JCB',
+        'maestro' => 'Maestro',
+        'apple_pay' => 'Apple Pay',
+        'google_pay' => 'Google Pay',
+        'samsung_pay' => 'Samsung Pay',
       )
     )
   ));
