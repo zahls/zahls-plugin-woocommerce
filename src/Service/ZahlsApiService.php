@@ -171,7 +171,15 @@ class ZahlsApiService
         $transaction = new \Zahls\Models\Request\Transaction();
         $transaction->setId((int) $transactionId);
         $transaction->setAmount((int) round(floatval($amount) * 100));
-        return $zahls->refund($transaction);
+        try {
+            return $zahls->refund($transaction);
+        } catch (\Zahls\ZahlsException $e) {
+            // No answer (e.g. timeout) or a server error: the refund may still have been made
+            if ((int) $e->getCode() === 0 || (int) $e->getCode() >= 500) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer (HTTP %d)', (int) $e->getCode()));
+            }
+            throw $e;
+        }
     }
 
     /**

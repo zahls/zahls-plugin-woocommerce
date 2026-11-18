@@ -616,32 +616,39 @@ function WC_Zahls_offline_gateway_init()
                     return new WP_Error('zahls_refund', __('No zahls.ch payment found for this order. Refund it in the zahls.ch backend.', 'zahls-ch-payment-gateway'));
                 }
                 $refund = $this->zahlsApiService->refundTransaction($transactionId, $amount);
+            } catch (\RuntimeException $e) {
+                wc_get_logger()->error(sprintf('Refund of order %d: %s', $order->get_id(), $e->getMessage()), ['source' => 'zahls']);
+                return new WP_Error('zahls_refund', __('zahls.ch did not answer. Check in the zahls.ch backend whether the refund was made before you try again; if it was, record it with "Refund manually".', 'zahls-ch-payment-gateway'));
             } catch (\Throwable $e) {
                 wc_get_logger()->error(sprintf('Refund of order %d failed: %s', $order->get_id(), $e->getMessage()), ['source' => 'zahls']);
                 return new WP_Error('zahls_refund', sprintf(__('zahls.ch did not refund the payment: %s', 'zahls-ch-payment-gateway'), $e->getMessage()));
             }
             $order->add_order_note(sprintf(
                 /* translators: 1: amount, 2: zahls.ch transaction id, 3: reason */
-                __('Refunded %1$s via zahls.ch (payment %2$s).%3$s', 'zahls-ch-payment-gateway'),
+                __('Refunded %1$s via zahls.ch (payment %2$s, refund %4$s).%3$s', 'zahls-ch-payment-gateway'),
                 wc_price($amount, ['currency' => $order->get_currency()]),
                 $transactionId,
-                $reason !== '' ? ' ' . sprintf(__('Reason: %s', 'zahls-ch-payment-gateway'), $reason) : ''
+                $reason !== '' ? ' ' . sprintf(__('Reason: %s', 'zahls-ch-payment-gateway'), $reason) : '',
+                $refund && method_exists($refund, 'getId') ? $refund->getId() : '?'
             ));
             return true;
         }
 
         /**
-         * The zahls.ch payment of the order: the transaction id WooCommerce recorded, otherwise (orders paid with
-         * older versions) the largest confirmed payment on the order's payment pages.
+         * The zahls.ch payment of the order: the transaction id WooCommerce recorded. Otherwise (orders paid with
+         * older versions) the one payment of the order total on a payment page with exactly this order's reference
+         * that is no other order's payment; 0 if there is not exactly one.
          */
         private function refundableTransactionId($order)
         {
             if ($order->get_transaction_id() !== '') {
                 return (int) $order->get_transaction_id();
             }
+            $reference = ($this->prefix ? $this->prefix . '_' : '') . $order->get_id();
+            $total = (int) round((float) $order->get_total() * 100);
             $gatewayIds = array_map('intval', (array) $order->get_meta('zahls_gateway_ids'));
             $gatewayIds[] = (int) $order->get_meta('zahls_gateway_id');
-            $best = null;
+            $candidates = [];
             foreach (array_unique(array_filter($gatewayIds)) as $gatewayId) {
                 try {
                     $gateway = $this->zahlsApiService->getZahlsGateway($gatewayId);
@@ -650,16 +657,20 @@ function WC_Zahls_offline_gateway_init()
                 } catch (\Exception $e) {
                     continue;
                 }
+                if ((string) $gateway->getReferenceId() !== $reference) {
+                    continue;
+                }
                 foreach ((array) $gateway->getInvoices() as $invoice) {
                     foreach ((array) ($invoice['transactions'] ?? []) as $transaction) {
-                        if (in_array($transaction['status'] ?? '', ['confirmed', 'partially-refunded'], true) && (int) ($transaction['amount'] ?? 0) > 0
-                            && (!$best || (int) $transaction['amount'] > (int) $best['amount'])) {
-                            $best = $transaction;
+                        $id = (int) ($transaction['id'] ?? 0);
+                        if (($transaction['status'] ?? '') === 'confirmed' && (int) ($transaction['amount'] ?? 0) === $total
+                            && !wc_get_orders(['transaction_id' => (string) $id, 'limit' => 1, 'return' => 'ids'])) {
+                            $candidates[$id] = true;
                         }
                     }
                 }
             }
-            return $best ? (int) $best['id'] : 0;
+            return count($candidates) === 1 ? (int) key($candidates) : 0;
         }
 
         /**
@@ -674,7 +685,7 @@ function WC_Zahls_offline_gateway_init()
         /**
          * Payment methods that can be stored for recurring payments (shown on a tokenization payment page).
          */
-        const RECURRING_ICONS = ['twint', 'visa', 'mastercard', 'american_express', 'diners_club', 'discover', 'jcb', 'maestro', 'postfinance_card', 'apple_pay', 'google_pay', 'samsung_pay'];
+        const RECURRING_ICONS = ['twint', 'visa', 'mastercard', 'american_express', 'diners_club', 'discover', 'jcb', 'maestro', 'postfinance_card', 'apple_pay', 'google_pay'];
 
         /**
          * Sets the logos to the payment methods active on the zahls.ch instance.
@@ -686,9 +697,15 @@ function WC_Zahls_offline_gateway_init()
         {
             $logos = [];
             $unknown = [];
-            foreach ($this->zahlsApiService->getActivePaymentMethodIds(get_woocommerce_currency()) as $id) {
+            $options = isset($this->form_fields['logos']['options']) ? $this->form_fields['logos']['options'] : [];
+            $ids = $this->zahlsApiService->getActivePaymentMethodIds(get_woocommerce_currency());
+            if (!$ids) {
+                throw new \Exception(__('zahls.ch lists no active payment method for the shop currency. The logos were not changed.', 'zahls-ch-payment-gateway'));
+            }
+            foreach ($ids as $id) {
                 $icon = self::PAYMENT_METHOD_ICONS[$id] ?? str_replace('-', '_', $id);
-                if (self::cardLogos([$icon])) {
+                // Only logos the settings offer, so that saving the settings keeps them
+                if (isset($options[$icon]) && self::cardLogos([$icon])) {
                     $logos[] = $icon;
                 } else {
                     $unknown[] = $id;
@@ -861,6 +878,17 @@ add_action('woocommerce_api_wc_zahls_gateway', function () {
  * A payment method change to zahls.ch only takes effect when the customer has authorized the new card or TWINT
  * on zahls.ch (webhook "authorized"), not already when the form is submitted.
  */
+/*
+ * A renewal or resubscribe order gets its own payment pages: the subscription's (from a payment method change, where
+ * every later charge is listed) must not be copied to it, they belong to no order.
+ */
+foreach (['renewal_order', 'resubscribe_order'] as $zahlsCopyType) {
+    add_filter('wc_subscriptions_' . $zahlsCopyType . '_data', function ($data) {
+        unset($data['zahls_gateway_id'], $data['zahls_gateway_ids']);
+        return $data;
+    });
+}
+
 add_filter('woocommerce_subscriptions_update_payment_via_pay_shortcode', function ($update, $new_payment_method) {
     return $new_payment_method === 'zahls' ? false : $update;
 }, 10, 2);

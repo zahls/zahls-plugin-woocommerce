@@ -185,6 +185,8 @@ The zahls.ch support team will be happy to assist you with the installation.
 = 2.0.12 =
 * New: Refunds from WooCommerce ("Refund via zahls.ch" on the order), in full or in part, also for subscription renewals
 * New: "Take active payment methods from zahls.ch" in the settings sets the logos to the payment methods active on the zahls.ch instance (for recurring payments: those that can be stored)
+* A partial refund made in the zahls.ch backend adds a note to the order
+* Renewal orders no longer copy the subscription's zahls.ch payment pages
 
 = 2.0.11 =
 * Security: A webhook is applied to an order only if its reference is exactly the order's and the payment belongs to a payment page the plugin created for that order. Before, a webhook could name another payment page and with it mark an unpaid order as paid or a paid order as refunded, and payments of another shop on the same zahls.ch instance with a similar prefix could change orders.
