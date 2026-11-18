@@ -47,7 +47,30 @@ class OrderService
                 if ($order->get_status() === $newTransactionsStatus) {
                     break;
                 }
+                // Refunded in WooCommerce ("Refund via zahls.ch"): WooCommerce records it and sets "refunded" itself,
+                // only a custom status for refunded orders is still to be set
+                if ((float) $order->get_total_refunded() >= (float) $order->get_total() - 0.001) {
+                    if ($newTransactionsStatus !== 'refunded' && $order->has_status('refunded')) {
+                        $order->update_status($newTransactionsStatus);
+                    }
+                    break;
+                }
                 $order->update_status($newTransactionsStatus, __('Payment was fully refunded', 'wc-zahls-gateway'));
+                break;
+            case \Zahls\Models\Response\Transaction::PARTIALLY_REFUNDED:
+                // WooCommerce has no status for it; a refund made in the zahls.ch backend gets a note, so that the
+                // shop sees it (one made in WooCommerce is recorded there already)
+                $refunded = abs((int) $zahlsTransaction->getAmount()) / 100;
+                foreach ($order->get_refunds() as $refund) {
+                    if (abs((float) $refund->get_amount() - $refunded) < 0.005 && $refund->get_date_created() && $refund->get_date_created()->getTimestamp() > time() - 3600) {
+                        break 2;
+                    }
+                }
+                $order->add_order_note(sprintf(
+                    __('zahls.ch reports a partial refund of %1$s (transaction %2$s). If it was not made in WooCommerce, record it there with "Refund manually".', 'zahls-ch-payment-gateway'),
+                    wc_price($refunded, ['currency' => $order->get_currency()]),
+                    $zahlsTransaction->getId()
+                ));
                 break;
 //                    case \Zahls\Models\Response\Transaction::PARTIALLY_REFUNDED:
 //                        if ($order->get_status() === 'refunded') {
