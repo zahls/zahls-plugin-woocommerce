@@ -53,7 +53,7 @@ class Dispatcher
 
 			// This shop's references are exactly "<prefix>_<order id>" (the order id alone without a prefix). Anything
 			// else, e.g. a payment of another shop on the same zahls.ch instance with a similar prefix, is not for us.
-			$prefix = (string) $this->prefix;
+			$prefix = $this->prefix ? (string) $this->prefix : ''; // as the checkout builds the reference
 			if (!preg_match('/^' . ($prefix !== '' ? preg_quote($prefix, '/') . '_' : '') . '(\d+)$/', $reference, $match)) {
 				$this->log('info', sprintf('Transaction %s: reference %s is not one of this shop', $resp['transaction']['id'], $reference));
 				$this->send_response('Reference does not belong to this shop');
@@ -122,11 +122,19 @@ class Dispatcher
 
 			// A renewal charged on the token: the renewal order recorded the id of the charge (all subscriptions of
 			// one order share the token and the reference, so they cannot tell which subscription was renewed)
-			// The transaction id comes from zahls.ch (not from the request), so this also covers refunds of renewals.
 			$charged_order = null;
 			if (!$is_authorization && function_exists('wcs_get_subscriptions_for_order')) {
 				$found = wc_get_orders(['transaction_id' => (string) $transaction->getId(), 'limit' => 1]);
 				$charged_order = $found ? reset($found) : null;
+				// A refund is a transaction of its own, in the invoice of the payment it refunds (for a renewal: the
+				// charge, an invoice of the first order's payment page)
+				if (!$charged_order && in_array($transaction->getStatus(), [Transaction::REFUNDED, Transaction::PARTIALLY_REFUNDED], true)) {
+					$reference_order = wc_get_order($order_id);
+					$page = $reference_order ? $this->find_order_gateway($reference_order, $transaction, $requested_gateway_id, $reference) : null;
+					$payment_id = $page ? StatusUtil::getRefundedPaymentId($page, (int) $transaction->getId()) : 0;
+					$found = $payment_id ? wc_get_orders(['transaction_id' => (string) $payment_id, 'limit' => 1]) : [];
+					$charged_order = $found ? reset($found) : null;
+				}
 				// Only a renewal of a subscription of the referenced order
 				if ($charged_order) {
 					$renewed = wcs_get_subscriptions_for_order($charged_order, ['order_type' => 'renewal']);
@@ -208,17 +216,16 @@ class Dispatcher
 				}
 			} elseif (in_array($newTransactionStatus, [Transaction::CONFIRMED, Transaction::REFUNDED, Transaction::PARTIALLY_REFUNDED])) {
 				// A confirmed transaction can also be a partial payment (with bank transfer), and a refund is a transaction
-				// of its own. The status follows from all transactions of the order's payment page: one this plugin created
-				// for the order (stored on it), never one named in the unauthenticated request, and only if it holds this
-				// transaction.
-				$gateway = $this->find_order_gateway($order, $transaction, $requested_gateway_id);
+				// of its own. The status follows from the transactions of the order's payment page that holds this one: a
+				// page the plugin stored on the order, or the page named in the request if zahls.ch has it under the
+				// order's reference.
+				$gateway = $this->find_order_gateway($order, $transaction, $requested_gateway_id, $reference);
 				if ($gateway === false) {
 					$this->log('warning', sprintf('Transaction %s: not a payment of order %s, ignored', $transaction->getId(), $order->get_id()));
 					$this->send_response('Transaction does not belong to the order');
 				}
 				if ($gateway) {
-					$confirmedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::CONFIRMED]);
-					$refundedAmount = StatusUtil::getAmountByStatusAndGateway($gateway, [Transaction::PARTIALLY_REFUNDED, Transaction::REFUNDED]);
+					list($confirmedAmount, $refundedAmount) = StatusUtil::getAmountsOfInvoice($gateway, (int) $transaction->getId());
 					$newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), $confirmedAmount, $refundedAmount);
 				} elseif ($newTransactionStatus === Transaction::CONFIRMED) {
 					$newTransactionStatus = StatusUtil::determineNewOrderStatus($order->get_total('edit'), (int) $transaction->getAmount(), 0);
@@ -266,29 +273,28 @@ class Dispatcher
 	}
 
 	/**
-	 * Reference id of the transaction as stored at zahls.ch, empty if the API does not return one.
-	 *
-	 * @param \Zahls\Models\Response\Transaction $transaction fetched transaction.
-	 * @return string
-	 */
-	/**
 	 * The payment page (zahls.ch gateway) of the order that holds the transaction.
 	 *
 	 * @param \WC_Order                          $order       order.
 	 * @param \Zahls\Models\Response\Transaction $transaction transaction fetched from zahls.ch.
-	 * @param int                                $hint        gateway id named in the webhook, tried first if it is one of the order's.
-	 * @return \Zahls\Models\Response\Gateway|false|null the gateway, false if none of the order's gateways holds the
-	 *                                                  transaction, null if the order has no stored gateway (older orders).
+	 * @param int                                $hint        gateway id named in the webhook.
+	 * @param string                             $reference   the order's reference (checked against zahls.ch before).
+	 * @return \Zahls\Models\Response\Gateway|false|null the gateway, false if none holds the transaction, null if
+	 *                                                  there is no gateway to look at.
 	 */
-	private function find_order_gateway( $order, $transaction, $hint ) {
+	private function find_order_gateway( $order, $transaction, $hint, $reference ) {
 		$ids = array_map( 'intval', (array) $order->get_meta( 'zahls_gateway_ids' ) );
 		$ids[] = (int) $order->get_meta( 'zahls_gateway_id' );
 		$ids = array_values( array_unique( array_filter( $ids ) ) );
+		$hint = (int) $hint;
+		// The page named in the request is used even when it is not stored on the order (orders of older versions
+		// kept only their last page), but only if zahls.ch has it under the order's own reference
+		$verify_reference = $hint && ! in_array( $hint, $ids, true );
+		if ( $hint ) {
+			$ids = array_values( array_unique( array_merge( [ $hint ], $ids ) ) );
+		}
 		if ( ! $ids ) {
 			return null;
-		}
-		if ( $hint && in_array( $hint, $ids, true ) ) {
-			$ids = array_values( array_unique( array_merge( [ $hint ], $ids ) ) );
 		}
 		foreach ( $ids as $id ) {
 			try {
@@ -298,6 +304,9 @@ class Dispatcher
 			} catch ( \Exception $e ) {
 				continue; // e.g. deleted when the customer cancelled on the payment page
 			}
+			if ( $verify_reference && $id === $hint && (string) $gateway->getReferenceId() !== (string) $reference ) {
+				continue;
+			}
 			if ( StatusUtil::gatewayHasTransaction( $gateway, (int) $transaction->getId() ) ) {
 				return $gateway;
 			}
@@ -305,6 +314,12 @@ class Dispatcher
 		return false;
 	}
 
+	/**
+	 * Reference id of the transaction as stored at zahls.ch, empty if the API does not return one.
+	 *
+	 * @param \Zahls\Models\Response\Transaction $transaction fetched transaction.
+	 * @return string
+	 */
 	private function get_transaction_reference( $transaction ) {
 		// Same field as in the webhook request, the top level reference only as fallback
 		$invoice = $transaction->getInvoice();

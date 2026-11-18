@@ -599,7 +599,7 @@ function WC_Zahls_offline_gateway_init()
         public static function cardLogos($setting)
         {
             return array_values(array_filter(is_array($setting) ? $setting : [], function ($logo) {
-                return is_string($logo) && preg_match('/^[a-z0-9-]+$/', $logo) && file_exists(__DIR__ . '/cardicons/card_' . $logo . '.svg');
+                return is_string($logo) && preg_match('/^[a-z0-9_-]+$/', $logo) && file_exists(__DIR__ . '/cardicons/card_' . $logo . '.svg');
             }));
         }
 
