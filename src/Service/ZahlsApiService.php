@@ -118,6 +118,11 @@ class ZahlsApiService
             $response = $zahls->getOne($zahlsTransaction);
             return $response;
         } catch (\Zahls\ZahlsException $e) {
+            // Anything but "not found" (no answer, a server error, a rate limit, credentials refused): unknown, not
+            // "no such transaction". The webhook then fails, so that zahls.ch can send it again.
+            if (!self::isNotFound($e)) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer for transaction %d: %s (HTTP %d)', $zahlsTransactionId, $e->getMessage(), (int) $e->getCode()));
+            }
             return null;
         }
     }
@@ -127,6 +132,13 @@ class ZahlsApiService
      *
      * @return \Zahls\Models\Response\Transaction|false the transaction zahls.ch created, false if rejected
      */
+    /**
+     * zahls.ch answers an unknown id with an error message (HTTP 200 on a real instance, 404 elsewhere).
+     */
+    private static function isNotFound(\Zahls\ZahlsException $e) {
+        return in_array((int) $e->getCode(), [200, 404], true);
+    }
+
     public function chargeTransaction($transactionId, $amount) {
         $zahls = $this->getInterface();
         $transaction = new \Zahls\Models\Request\Transaction();
@@ -136,11 +148,14 @@ class ZahlsApiService
             $response = $zahls->charge($transaction);
             return $response ?: false;
         } catch (\Zahls\ZahlsException $e) {
-            // HTTP code 0: no answer from zahls.ch (e.g. timeout), the charge may still have been made
             wc_get_logger()->error(
                 sprintf('Charge on tokenization %s failed: %s (HTTP %d)', $transactionId, $e->getMessage(), (int) $e->getCode()),
                 ['source' => 'zahls']
             );
+            // No answer (e.g. timeout) or a server error: the charge may still have been made
+            if ((int) $e->getCode() === 0 || (int) $e->getCode() >= 500) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer the charge on tokenization %s (HTTP %d)', $transactionId, (int) $e->getCode()));
+            }
         }
         return false;
     }
@@ -154,6 +169,9 @@ class ZahlsApiService
             $zahlsGateway = $zahls->getOne($gateway);
             return $zahlsGateway;
         } catch (\Zahls\ZahlsException $e) {
+            if (!self::isNotFound($e)) {
+                throw new \RuntimeException(sprintf('zahls.ch did not answer for gateway %d: %s (HTTP %d)', $gatewayId, $e->getMessage(), (int) $e->getCode()));
+            }
             throw new \Exception('No gateway found by ID: '. $gatewayId);
         }
     }

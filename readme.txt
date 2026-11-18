@@ -5,7 +5,7 @@ Tags: twint, kreditkarten, postfinance, payrexx, stripe
 Requires at least: 4.6
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.0.10
+Stable tag: 2.0.11
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -181,6 +181,17 @@ The zahls.ch support team will be happy to assist you with the installation.
 
 
 == Changelog ==
+
+= 2.0.11 =
+* Security: A webhook is applied to an order only if its reference is exactly the order's and the payment belongs to a payment page the plugin created for that order. Before, a webhook could name another payment page and with it mark an unpaid order as paid or a paid order as refunded, and payments of another shop on the same zahls.ch instance with a similar prefix could change orders.
+* Fix: The checkout failed with a fatal error for subscription carts when no "Recurring payment logo" was selected
+* Fix: An order that was paid and later cancelled or refunded in WooCommerce was set back to "Processing" by a webhook sent again, with its emails and stock reduction
+* Fix: A webhook that arrives while zahls.ch cannot be reached (or refuses the request) is answered with an error, so that it is sent again, instead of being dropped
+* Fix: A refund in the zahls.ch backend of a subscription's first payment or of a renewal now reaches the right order (renewal charges are listed on the first order's payment page)
+* A renewal charge that zahls.ch does not answer puts the renewal on hold with a note instead of failing it, so that no automatic retry charges the customer a second time
+* Requests to zahls.ch time out after 30 seconds instead of keeping a checkout or webhook waiting
+* Payment logo settings are checked and escaped; the API key field is masked; the Look&Feel ID no longer defaults to an old API key setting
+* The settings page no longer loads an image from an external server, and the SDK examples are no longer part of the plugin
 
 = 2.0.10 =
 * Fix: Automatic subscription renewals were charged at zahls.ch but stayed "Pending" and the subscription "On hold". The renewal is now marked paid as soon as zahls.ch confirms the charge. Please update immediately if you use subscriptions.

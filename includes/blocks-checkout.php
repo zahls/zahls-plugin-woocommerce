@@ -140,6 +140,9 @@ $paymentMethodChangeGET = !empty($_GET['change_payment_method']) ? $_GET['change
 
         $logo_array = [];
 
+        if(class_exists('WC_Zahls_Gateway')){
+            $logos = WC_Zahls_Gateway::cardLogos($logos);
+        }
         if(is_array($logos)){
             foreach ($logos as $logo) {
 

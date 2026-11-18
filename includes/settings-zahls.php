@@ -33,7 +33,7 @@ $settings = array(
   ),
   'sid' => array(
     'title' => __('API key', 'zahls-ch-payment-gateway'),
-    'type' => 'text',
+    'type' => 'password',
     'custom_attributes' => array('required' => 'required'),
     'description' => __('Copy your API key from the backend of zahls.ch.', 'zahls-ch-payment-gateway'),
     'default' => __(get_option("woocommerce_zahls_sid"), 'zahls-ch-payment-gateway'),
@@ -44,7 +44,7 @@ $settings = array(
     'type' => 'text',
 
     'description' => __('Enter the Look&Feel ID from the backend of zahls.ch to customise the appearance of zahls.ch.', 'zahls-ch-payment-gateway'),
-    'default' => __(get_option("woocommerce_zahls_sid"), 'zahls-ch-payment-gateway'),
+    'default' => '',
     'desc_tip' => true,
   ),
   'prefix' => array(

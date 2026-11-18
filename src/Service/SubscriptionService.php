@@ -64,7 +64,14 @@ class SubscriptionService
             }
 
             // Both must be given to do a valid recurring transaction
-            $charged = $this->zahlsApiService->chargeTransaction($tokenizationId, $amount);
+            try {
+                $charged = $this->zahlsApiService->chargeTransaction($tokenizationId, $amount);
+            } catch (\RuntimeException $e) {
+                // Whether zahls.ch charged is unknown: not failed, so that no retry charges a second time
+                $renewal->update_status('on-hold', __('zahls.ch did not answer the charge. Check in the zahls.ch backend whether the customer was charged before you retry or mark the order paid.', 'zahls-ch-payment-gateway'));
+                do_action('zahls_renewal_charge', $subscription, $tokenizationId, $amount, false);
+                continue;
+            }
 
             /**
              * Fires after a renewal was charged at zahls.ch, e.g. for logging in test tools.

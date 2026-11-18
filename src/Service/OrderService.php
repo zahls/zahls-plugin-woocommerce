@@ -83,6 +83,16 @@ class OrderService
         if ($order->has_status(['processing', 'completed'])) {
             return;
         }
+        // This payment was applied before and the order since changed by the shop (e.g. cancelled, refunded or a
+        // custom status): a webhook sent again must not reopen it, send its emails again or reduce the stock again
+        if ($order->get_date_paid() && $order->get_transaction_id() === (string) $transactionId) {
+            $order->add_order_note(sprintf(
+                __('zahls.ch reported a confirmed payment (%1$s) again. The order was paid before, its status stays "%2$s".', 'zahls-ch-payment-gateway'),
+                $transactionId,
+                wc_get_order_status_name($order->get_status())
+            ));
+            return;
+        }
         $order->update_meta_data('zahls_payment_method', $paymentBrand);
         $order->payment_complete($transactionId);
         $order->save();
